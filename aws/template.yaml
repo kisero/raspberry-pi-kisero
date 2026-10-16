@@ -60,7 +60,7 @@ Resources:
               Resource: !GetAtt ArchiveBucket.Arn
               Condition:
                 StringLike:
-                  s3:prefix: [published/index.json, published/trips/*]
+                  s3:prefix: [published/index.json, published/trips/*, published/sensors/history.json]
             - Effect: Allow
               Action: kms:Decrypt
               Resource: '*'
