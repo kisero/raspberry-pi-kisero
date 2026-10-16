@@ -17,9 +17,17 @@ fi
 
 install -d -o root -g root -m 0755 /opt/kisero/collector /etc/kisero
 install -d -o root -g root -m 0755 /etc/systemd/system
-install -m 0644 "$repo_dir/collector/sensor_collector.py" /opt/kisero/collector/sensor_collector.py
-install -m 0644 "$repo_dir/systemd/kisero-sensor.service" /etc/systemd/system/kisero-sensor.service
-install -m 0644 "$repo_dir/systemd/kisero-sensor.timer" /etc/systemd/system/kisero-sensor.timer
+install_file() {
+  local source="$1" destination="$2" mode="$3"
+  if [[ "$source" -ef "$destination" ]]; then
+    chmod "$mode" "$destination"
+  else
+    install -m "$mode" "$source" "$destination"
+  fi
+}
+install_file "$repo_dir/collector/sensor_collector.py" /opt/kisero/collector/sensor_collector.py 0644
+install_file "$repo_dir/systemd/kisero-sensor.service" /etc/systemd/system/kisero-sensor.service 0644
+install_file "$repo_dir/systemd/kisero-sensor.timer" /etc/systemd/system/kisero-sensor.timer 0644
 chown root:root /etc/kisero/sensor.env
 chmod 0600 /etc/kisero/sensor.env
 systemctl daemon-reload
