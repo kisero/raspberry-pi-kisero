@@ -1,0 +1,11 @@
+[Unit]
+Description=Collect Kisero cabin sensor readings every five minutes
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+AccuracySec=5s
+Unit=kisero-sensor.service
+
+[Install]
+WantedBy=timers.target

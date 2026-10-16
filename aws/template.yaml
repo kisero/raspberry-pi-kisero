@@ -1,0 +1,115 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Kisero private boat log archive and deliberately public exact-track API
+Parameters:
+  AllowedWebOrigin:
+    Type: String
+    Default: https://kisero.org
+  DeviceTokenParameter:
+    Type: String
+    Description: Name of a pre-created SSM SecureString parameter containing the Pi upload token
+    Default: /kisero/boat/device-token
+Resources:
+  ArchiveBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+  BoatApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      CorsConfiguration:
+        AllowOrigins: [!Ref AllowedWebOrigin]
+        AllowHeaders: [content-type, authorization]
+        AllowMethods: [GET, POST, OPTIONS]
+        MaxAge: 600
+  CollectorApi:
+    Type: AWS::Serverless::Function
+    Properties:
+      Runtime: python3.12
+      Handler: app.handler
+      CodeUri: function/
+      Timeout: 20
+      MemorySize: 128
+      Environment:
+        Variables:
+          BUCKET: !Ref ArchiveBucket
+          TOKEN_PARAMETER: !Ref DeviceTokenParameter
+          WEB_ORIGIN: !Ref AllowedWebOrigin
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action: [s3:GetObject, s3:PutObject]
+              Resource:
+                - !Sub ${ArchiveBucket.Arn}/raw/*
+                - !Sub ${ArchiveBucket.Arn}/published/*
+            - Effect: Allow
+              Action: s3:ListBucket
+              Resource: !GetAtt ArchiveBucket.Arn
+              Condition:
+                StringLike:
+                  s3:prefix: [published/index.json, published/trips/*]
+            - Effect: Allow
+              Action: kms:Decrypt
+              Resource: '*'
+              Condition:
+                StringEquals:
+                  kms:ViaService: !Sub ssm.${AWS::Region}.${AWS::URLSuffix}
+                  kms:CallerAccount: !Ref AWS::AccountId
+            - Effect: Allow
+              Action: ssm:GetParameter
+              Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${DeviceTokenParameter}
+      Events:
+        Ingest:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref BoatApi
+            Path: /v1/ingest
+            Method: POST
+        Trips:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref BoatApi
+            Path: /v1/trips
+            Method: GET
+        Trip:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref BoatApi
+            Path: /v1/trips/{id}
+            Method: GET
+        SensorUpload:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref BoatApi
+            Path: /v1/sensors
+            Method: POST
+        SensorHistory:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref BoatApi
+            Path: /v1/sensors
+            Method: GET
+  ApiLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${CollectorApi}
+      RetentionInDays: 14
+Outputs:
+  ApiUrl:
+    Description: API base URL for Pi upload and public website reads
+    Value: !Sub https://${BoatApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}
+  ArchiveBucketName:
+    Value: !Ref ArchiveBucket

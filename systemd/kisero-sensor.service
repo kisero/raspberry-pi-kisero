@@ -1,0 +1,28 @@
+[Unit]
+Description=Read and upload Kisero cabin temperature and humidity
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=admin
+SupplementaryGroups=i2c
+EnvironmentFile=/etc/kisero/sensor.env
+Environment=KISERO_SENSOR_QUEUE=/var/lib/kisero/sensors.sqlite3
+WorkingDirectory=/opt/kisero
+StateDirectory=kisero
+StateDirectoryMode=0700
+UMask=0077
+ExecStart=/usr/bin/python3 /opt/kisero/collector/sensor_collector.py
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=/var/lib/kisero
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target
