@@ -125,3 +125,10 @@ connector before choosing its final wiring. No GPS wiring is recorded as complet
 
 The previous direct temperature-sensor supply pins 1 and 6 are superseded by the
 breadboard supply in this plan. Do not retain duplicate loose supply wires.
+
+### Continuous alarm service
+
+The alarm service uses the verified PIR BCM26 (physical37) and buzzer BCM18
+(physical12) wiring above. Stop `kisero-alarm.service` before running standalone
+GPIO buzzer/motion scripts, because the service owns these GPIO lines. Restart
+it afterward; the PIR warm-up is 60 seconds. No wiring changes are required.

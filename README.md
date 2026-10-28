@@ -185,3 +185,48 @@ Confirmed on 2026-10-28: Ethernet SSH, active hotspot, USB-bound HTTPS (HTTP 204
 Kisero AWS access over USB (HTTP 200), enabled modem autoconnect, active sensor
 timer, and synchronized system time. A physical cable-removal/reboot failover
 check and testing with the Yachtdevice/Raymarine aboard remain outstanding.
+
+## Motion alarm and live website
+
+`collector/alarm.py` runs continuously under `systemd/kisero-alarm.service`.
+Install from this checkout using `sudo bash scripts/install-alarm-service.sh`.
+It reuses the private `/etc/kisero/sensor.env`; gpiozero and lgpio must be
+installed through the Pi's system packages. Wiring: PIR OUT BCM26/physical37,
+buzzer IO BCM18/physical12 (active high); see WIRING.md for power/ground.
+
+The default is **off**. The PIR warms up for 60 seconds after service start.
+Arming gives a 30-second exit delay. A high PIR after the delay or a subsequent
+rising edge triggers a 10-second pulsed buzzer. Disarm stops the buzzer when the
+Pi receives it. Settings persist across restart; internet loss retains the last
+applied setting. This is a hobby alarm, not a monitored security service.
+
+Motion transitions and arm/disarm/buzzer events are queued in a mode-0600 SQLite
+outbox until AWS acknowledges each ID. Heartbeats are sent every 30 seconds;
+control is polled every three seconds while online. A separate network worker
+keeps local sensing and buzzer timing responsive during internet outages.
+The website marks the Pi offline after 90 seconds without a heartbeat. Remote
+changes while offline remain pending and do not imply the Pi has applied them.
+
+Cloud: the existing Lambda/API gains alarm routes, an on-demand DynamoDB table
+for current state, seven-day events and WebSocket connections, and a public
+read-only API Gateway WebSocket feed. The public snapshot shows at most the
+latest 500 events from the last 24 hours. Every event is additionally archived
+privately under S3 `raw/motion/YYYY/MM/DD/<id>.json` for long-term analysis.
+The public feed never accepts controls or device uploads. Routine heartbeats
+are not written to S3. Costs depend on motion, connected viewers and AWS usage;
+this uses no continuously running cloud server.
+
+The unlinked `https://kisero.org/alarm.html#<capability>` page controls the alarm
+using a purpose-specific HMAC derived from the existing upload token. The
+fragment is not sent to the hosting server, and the upload token is never
+included in the website. Generate the link privately on the Pi with
+`sudo python3 scripts/alarm-control-url.py`; do not commit or share the result.
+Anyone with that complete link can arm/disarm. Rotating the device token also
+invalidates the derived control link (Lambda caches the token up to five minutes).
+
+API routes: anonymous GET `/v1/alarm`; capability-authenticated POST
+`/v1/alarm/control` with `{"armed":true|false}`; device-token-authenticated GET/POST
+`/v1/alarm/device` and POST `/v1/motion`. Deploy using `sam build --template-file
+aws/template.yaml`, then `sam deploy --stack-name kisero-yachtdevice --region
+eu-north-1 --resolve-s3 --capabilities CAPABILITY_IAM` with the built template.
+Keep the existing stack, S3 bucket, SSM parameter and HTTP API.

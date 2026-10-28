@@ -47,9 +47,18 @@ Resources:
           BUCKET: !Ref ArchiveBucket
           TOKEN_PARAMETER: !Ref DeviceTokenParameter
           WEB_ORIGIN: !Ref AllowedWebOrigin
+          ALARM_TABLE: !Ref AlarmTable
+          ALARM_WEBSOCKET_URL: !Sub wss://${AlarmSocket}.execute-api.${AWS::Region}.${AWS::URLSuffix}/live
+          ALARM_WS_MANAGEMENT_URL: !Sub https://${AlarmSocket}.execute-api.${AWS::Region}.${AWS::URLSuffix}/live
       Policies:
         - Version: '2012-10-17'
           Statement:
+            - Effect: Allow
+              Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:DeleteItem, dynamodb:Query]
+              Resource: !GetAtt AlarmTable.Arn
+            - Effect: Allow
+              Action: execute-api:ManageConnections
+              Resource: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${AlarmSocket}/live/POST/@connections/*
             - Effect: Allow
               Action: [s3:GetObject, s3:PutObject]
               Resource:
@@ -72,6 +81,36 @@ Resources:
               Action: ssm:GetParameter
               Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${DeviceTokenParameter}
       Events:
+        Alarm:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref BoatApi
+            Path: /v1/alarm
+            Method: GET
+        AlarmControl:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref BoatApi
+            Path: /v1/alarm/control
+            Method: POST
+        AlarmDeviceRead:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref BoatApi
+            Path: /v1/alarm/device
+            Method: GET
+        AlarmDeviceStatus:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref BoatApi
+            Path: /v1/alarm/device
+            Method: POST
+        MotionUpload:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref BoatApi
+            Path: /v1/motion
+            Method: POST
         Ingest:
           Type: HttpApi
           Properties:
@@ -102,6 +141,73 @@ Resources:
             ApiId: !Ref BoatApi
             Path: /v1/sensors
             Method: GET
+  AlarmTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+      SSESpecification:
+        SSEEnabled: true
+  AlarmSocket:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: kisero-alarm-live
+      ProtocolType: WEBSOCKET
+      RouteSelectionExpression: $request.body.action
+  AlarmSocketIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref AlarmSocket
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${CollectorApi.Arn}/invocations
+  AlarmConnect:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref AlarmSocket
+      RouteKey: $connect
+      Target: !Sub integrations/${AlarmSocketIntegration}
+  AlarmDisconnect:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref AlarmSocket
+      RouteKey: $disconnect
+      Target: !Sub integrations/${AlarmSocketIntegration}
+  AlarmDefault:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref AlarmSocket
+      RouteKey: $default
+      Target: !Sub integrations/${AlarmSocketIntegration}
+  AlarmSocketStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref AlarmSocket
+      StageName: live
+      AutoDeploy: true
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 20
+        ThrottlingRateLimit: 10
+  AlarmSocketPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref CollectorApi
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${AlarmSocket}/*
   ApiLogs:
     Type: AWS::Logs::LogGroup
     Properties:

@@ -4,6 +4,8 @@ import hmac
 import json
 import math
 import os
+import time
+import alarm_api
 from datetime import datetime, timedelta, timezone
 import boto3
 from botocore.exceptions import ClientError
@@ -18,10 +20,20 @@ def response(status, body, origin):
             "body": json.dumps(body)}
 
 
+_cached_token = None
+_token_until = 0
+
+def get_token():
+    global _cached_token, _token_until
+    if time.monotonic() >= _token_until:
+        _cached_token = ssm.get_parameter(Name=os.environ["TOKEN_PARAMETER"], WithDecryption=True)["Parameter"]["Value"]
+        _token_until = time.monotonic() + 300
+    return _cached_token
+
 def authorized(headers):
     normalized = {key.lower(): value for key, value in headers.items()}
     token = normalized.get("authorization", "")
-    expected = ssm.get_parameter(Name=os.environ["TOKEN_PARAMETER"], WithDecryption=True)["Parameter"]["Value"]
+    expected = get_token()
     return token.startswith("Bearer ") and hmac.compare_digest(token[7:], expected)
 
 
@@ -47,6 +59,10 @@ def normalize_sensor_sample(payload):
 
 
 def handler(event, context):
+    if "connectionId" in event.get("requestContext", {}):
+        return alarm_api.websocket(event, context)
+    if event.get("rawPath", "").startswith("/v1/alarm") or event.get("rawPath") == "/v1/motion":
+        return alarm_api.http(event, context, authorized, get_token)
     method = event.get("requestContext", {}).get("http", {}).get("method", "GET")
     path = event.get("rawPath", "")
     origin = os.environ["WEB_ORIGIN"]

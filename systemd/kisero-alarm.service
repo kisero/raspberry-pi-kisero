@@ -1,0 +1,22 @@
+[Unit]
+Description=Kisero motion alarm and live event uploader
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=admin
+SupplementaryGroups=gpio
+EnvironmentFile=/etc/kisero/sensor.env
+ExecStart=/usr/bin/python3 /opt/kisero/collector/alarm.py
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/kisero
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
