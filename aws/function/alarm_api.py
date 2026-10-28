@@ -92,6 +92,52 @@ def timestamp(value):
     return parsed.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
+_connectivity_started = None
+
+def connectivity_start():
+    global _connectivity_started
+    if _connectivity_started is None:
+        _connectivity_started = table().get_item(Key={"pk": "CONNECTIVITY", "sk": "START"}, ConsistentRead=True).get("Item", {}).get("startedAt")
+    return _connectivity_started
+
+
+def record_connectivity(received_at):
+    """Record server receipt, never the device's potentially delayed clock."""
+    global _connectivity_started
+    if connectivity_start() is None:
+        try:
+            table().put_item(Item={"pk": "CONNECTIVITY", "sk": "START", "startedAt": received_at},
+                             ConditionExpression="attribute_not_exists(pk)")
+            _connectivity_started = received_at
+        except ClientError as error:
+            if error.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
+            connectivity_start()
+    epoch = int(datetime.fromisoformat(received_at.replace("Z", "+00:00")).timestamp())
+    # At most one entry per 30-second bin; a busy PIR doesn't inflate the history.
+    bucket = datetime.fromtimestamp(epoch // 30 * 30, timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    try:
+        table().put_item(Item={"pk": "CONNECTIVITY", "sk": "BEAT#" + bucket,
+            "receivedAt": received_at, "expiresAt": epoch + 7 * 86400},
+            ConditionExpression="attribute_not_exists(pk)")
+    except ClientError as error:
+        if error.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+
+
+def connectivity_history():
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=24, seconds=90)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    query = {"KeyConditionExpression": Key("pk").eq("CONNECTIVITY") & Key("sk").between("BEAT#" + cutoff, "BEAT#~")}
+    beats = []
+    while True:
+        result = table().query(**query)
+        beats.extend(row["receivedAt"] for row in result.get("Items", []))
+        if not result.get("LastEvaluatedKey"):
+            break
+        query["ExclusiveStartKey"] = result["LastEvaluatedKey"]
+    return {"startedAt": connectivity_start(), "beats": beats, "graceSeconds": 90}
+
+
 def device_status(payload):
     for field in ("armed", "motion", "sounding", "ready"):
         if not isinstance(payload.get(field), bool):
@@ -101,6 +147,7 @@ def device_status(payload):
         raise ValueError("invalid control version")
     item = {key: payload[key] for key in ("armed", "motion", "sounding", "ready", "controlVersion")}
     item["reportedAt"] = timestamp(payload.get("observedAt"))
+    item["receivedAt"] = now()
     item["armingUntil"] = timestamp(payload["armingUntil"]) if payload.get("armingUntil") else None
     try:
         table().put_item(Item={"pk": "ALARM", "sk": "DEVICE", **item},
@@ -109,6 +156,9 @@ def device_status(payload):
     except ClientError as error:
         if error.response["Error"]["Code"] != "ConditionalCheckFailedException":
             raise
+
+    record_connectivity(item["receivedAt"])
+    return item["receivedAt"]
 
 
 def http(event, context, authorized, get_token):
@@ -121,6 +171,7 @@ def http(event, context, authorized, get_token):
         records = table().query(KeyConditionExpression=Key("pk").eq("ALARM") & Key("sk").between(
             "EVENT#" + cutoff, "EVENT#~"), ScanIndexForward=False, Limit=500)
         result["events"] = plain(list(reversed(records.get("Items", []))))
+        result["connectivity"] = connectivity_history()
         return reply(200, result)
     if method == "POST" and path == "/v1/alarm/control":
         # A purpose-specific capability is derived from the existing device secret.
@@ -149,8 +200,8 @@ def http(event, context, authorized, get_token):
             publish()
             return reply(200, state())
         if method == "POST" and path == "/v1/alarm/device":
-            device_status(payload)
-            publish()
+            received_at = device_status(payload)
+            publish({"connectivityBeat": received_at, "connectivityStartedAt": connectivity_start()})
             return reply(200, {"accepted": True, "control": control()})
         if method == "POST" and path == "/v1/motion":
             event_id = payload.get("id", "")

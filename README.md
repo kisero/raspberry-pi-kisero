@@ -239,3 +239,19 @@ The private page's on and off commands were acknowledged by the Pi during the
 exit delay, and the alarm was left **off**. The event outbox was empty after
 acknowledgement. This check did not deliberately sound the buzzer; the hardware's
 three-beep check is recorded in WIRING.md.
+
+### Internet contact timeline
+
+The alarm device heartbeat also records its **AWS server receipt time**, at most
+one record per 30-second bin, in the existing DynamoDB table. Records expire
+after seven days; GET `/v1/alarm` supplies the latest 24 hours plus the monitoring
+start time and a 90-second grace period. WebSocket status pushes carry new
+receipt times. No new AWS resources, IAM permissions, Pi services or secrets are
+required. Sensor sample age is separate from internet contact: a sensor can stop
+reporting while the Pi still has internet.
+
+The website interprets a recent successful Pi→AWS contact as confirmed internet
+reachability, a gap longer than 90 seconds as **no contact**, and time before
+monitoring began as **no data**. No contact cannot distinguish an internet outage
+from a powered-off Pi or unreachable backend. Historical gaps before this
+monitor was deployed are not reconstructed or labelled as outages.
