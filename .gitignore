@@ -3,3 +3,10 @@ __pycache__/
 var/
 .env
 .secrets/
+
+# Runtime credentials and raw connection exports
+.env.*
+!.env.example
+sensor.env
+*.nmconnection
+kisero-ufi-session.json

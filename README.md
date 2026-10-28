@@ -4,18 +4,23 @@ This repository is the source of truth for the boat Raspberry Pi setup and appli
 
 ## Current network design
 
-- `eth0` is the temporary home-router management and internet link while the hotspot is configured.
+- `eth0` is the home-router management and internet link whenever the cable is connected (DHCP, route metric 50).
 - `wlan0` is the boat Wi-Fi access point for the Yachtdevice and phone. It is configured as `Kisero-Boat` on 2.4 GHz channel 6.
-- NetworkManager's `shared` mode provides DHCP and routes hotspot clients through the current internet uplink. At home this is Ethernet; aboard it will be the supported USB 4G modem.
+- NetworkManager's `shared` mode provides DHCP and routes hotspot clients through the current internet uplink. At home this is Ethernet; aboard it is the USB 4G modem (route metric 100), whose HTTPS connectivity has been verified.
 - The Yachtdevice should join the Pi access point in Wi-Fi Client mode. Reserve its address on the Pi before enabling the log collector.
 
 The Pi 3's built-in Wi-Fi required Protected Management Frames (PMF) to be disabled for WPA-PSK access point startup on this Debian 13 image. The hotspot remains password-protected; the setup script applies this compatibility setting.
 
-## Current status (2026-10-15)
+## Current status (2026-10-28)
 
-- Hotspot is active, with NetworkManager shared subnet `10.42.0.0/24` and Pi address `10.42.0.1`.
-- Ethernet management and internet are active through `eth0`; hotspot NAT is installed. The user confirmed their phone connects successfully to the hotspot.
-- The Yachtdevice and 4G modem have not been connected/configured yet.
+- Hotspot remains active as `Kisero-Boat`, with subnet `10.42.0.0/24` and Pi address `10.42.0.1`.
+- Ethernet management uses the dedicated `kisero-home-ethernet` NetworkManager profile, bound to `eth0`, with DHCP and autoconnect enabled. Its last verified home-network address is `192.168.68.67/22` (router `192.168.68.1`). SSH is available as `admin@192.168.68.67` without joining the hotspot.
+- The Ethernet MAC address observed on the Pi is **`b8:27:eb:23:e8:89`**. Use this address for a router DHCP reservation; `b8:27:eb:76:bd:dc` is the Wi-Fi MAC, not the Ethernet MAC. DHCP may change the IP unless the router reserves it.
+- The 4G UFI USB modem presents an RNDIS network adapter as `usb0` at `192.168.100.158/24`. The existing generic `netplan-eth0` profile was attached to that adapter, leaving physical Ethernet disconnected even with carrier detected. The dedicated Ethernet profile fixes this without altering the USB or hotspot profiles.
+- Home Ethernet is preferred while connected (metric 50); the USB modem is the default internet uplink aboard when Ethernet is absent (metric 100).
+- The Yachtdevice collector still needs live-device export inspection aboard before automated downloads can be enabled.
+
+To recreate or repair the wired management profile, copy and run `scripts/setup-ethernet.sh` on the Pi with `sudo bash scripts/setup-ethernet.sh`. It activates DHCP on `eth0` and persists across reboots; it does not restart NetworkManager or alter `wlan0`.
 
 ## Yachtdevice log collection
 
@@ -26,8 +31,11 @@ sequence.
 The Yacht Devices YDWG-02 manual (firmware 1.71) documents recorded-data export
 through its browser export page. To make it available to the Pi:
 
-1. Join the Yachtdevice to `Kisero-Boat` in Wi-Fi Client mode and set its static
-   address to `10.42.0.2/24` (Pi gateway `10.42.0.1`).
+1. Reserve `10.42.0.2` for the Yachtdevice, or exclude it from the hotspot DHCP
+   allocation range before using it as a static address. This reservation is still
+   pending until the device is available aboard. Then join the Yachtdevice to
+   `Kisero-Boat` in Wi-Fi Client mode, using `10.42.0.2/24`, gateway and DNS
+   `10.42.0.1`.
 2. In the Yachtdevice NMEA Servers settings, set Server #3's data protocol to
    `Memory` and its port to `1458`.
 3. The export page is then at `http://10.42.0.2:1458/` and can export recorded
@@ -111,3 +119,64 @@ at `/opt/kisero`; create `/etc/kisero/sensor.env` with `KISERO_API_URL` and
 `kisero-sensor.timer`. The API keeps the complete encrypted sensor archive
 private in S3 and exposes only the recent temperature/humidity series to the
 website.
+
+## USB 4G modem (2026-10-28)
+
+The connected stick enumerates as USB `05c6:9024` (Qualcomm Android) and exposes
+`usb0` through the Linux `rndis_host` driver. It is a self-contained mobile router:
+the SIM, carrier registration, and APN are handled by its 4G UFI web interface at
+`http://192.168.100.1/`, rather than ModemManager on the Pi.
+
+`scripts/setup-usb-modem.sh` creates the persistent `kisero-usb-modem` profile
+bound only to `usb0`, using DHCP, autoconnect, and route metric 100. Run it with
+sudo on the Pi. The home Ethernet profile uses metric 50, so Ethernet supplies
+internet while attached; USB supplies the default route when Ethernet is absent.
+The existing hotspot uses NetworkManager shared mode to route boat clients via
+the available uplink. No NetworkManager restart is required.
+
+Run `scripts/check-usb-internet.sh` to check HTTPS explicitly through `usb0`.
+Success through home Ethernet is not evidence that the SIM has working data.
+
+`scripts/modem-status.py --login` prompts for the modem web password and prints
+SIM/network/APN status with credentials and SIM identifiers redacted. An authenticated
+session is held privately under `/run/user/<uid>/` for the current boot; credentials
+are not stored in Git. It also supports `--select-sim 1` or `--select-sim 2` for this
+modem's two selectable slots. Selecting a slot may briefly restart the modem.
+
+Initial diagnosis before the SIM was reseated/unlocked: USB DHCP and modem administration worked, but both SIM selections
+reported `simCardState=invalid`, no SIM identifiers, no service, no WAN IP, and APN
+`none`. USB-bound traffic received “Destination Net Unreachable” from the modem.
+Selection was returned to slot 1. After the user addressed the physical SIM/PIN,
+the modem reported `simCardState=ok`, carrier `MASMOVIL`, and a connected mobile WAN.
+It automatically selected its `Yoigo Internet` profile with APN `internet`.
+A USB-bound Google HTTPS check returned HTTP 204, and the Kisero AWS `/v1/sensors` endpoint returned HTTP 200 over USB, independently of Ethernet.
+The diagnostic uses this endpoint because example.com reset connections on this
+mobile service; ICMP and direct Cloudflare tests did not succeed. No manual APN
+change or SIM PIN guessing was needed. Network time synchronization is now active.
+
+## Reproducing the configuration
+
+The setup scripts are the reproducible, non-secret configuration record. Raw
+NetworkManager connection files, modem session files, and runtime environment
+files must not be committed: they can contain passwords or upload tokens.
+
+| Component | Repository record | Device configuration |
+| --- | --- | --- |
+| Home Ethernet | `scripts/setup-ethernet.sh` | `kisero-home-ethernet`, bound to `eth0`, DHCP, autoconnect, metric 50 |
+| USB mobile uplink | `scripts/setup-usb-modem.sh` | `kisero-usb-modem`, bound to `usb0`, DHCP, autoconnect, metric 100 |
+| Boat Wi-Fi | `scripts/setup-hotspot.sh` | `kisero-boat-ap`, `Kisero-Boat`, 2.4 GHz channel 6, WPA2, PMF disabled, shared IPv4 |
+| Cabin sensor | `scripts/enable-i2c.sh`, `scripts/install-sensor-service.sh`, `systemd/kisero-sensor.*` | I²C SHT3x at `0x44`/`0x45`, five-minute collection and queued upload |
+| Cloud infrastructure | `aws/template.yaml` | SAM/CloudFormation stack `kisero-yachtdevice`, region `eu-north-1` |
+| Modem diagnostics | `scripts/modem-status.py`, `scripts/check-usb-internet.sh` | Redacted modem status and USB-bound HTTPS checks |
+
+For a replacement Pi, apply the Ethernet and USB scripts, then configure the
+hotspot over Ethernet using its existing script. Enter a Wi-Fi password at the
+prompt; recreate `/etc/kisero/sensor.env` privately and install the sensor service.
+SIM subscription and PIN policy are configured on the SIM/modem, outside Git.
+The modem selected SIM slot 1 and APN `internet` automatically; no operator account
+password, SIM PIN, IMEI, IMSI, ICCID, or modem web password is saved here.
+
+Confirmed on 2026-10-28: Ethernet SSH, active hotspot, USB-bound HTTPS (HTTP 204),
+Kisero AWS access over USB (HTTP 200), enabled modem autoconnect, active sensor
+timer, and synchronized system time. A physical cable-removal/reboot failover
+check and testing with the Yachtdevice/Raymarine aboard remain outstanding.
