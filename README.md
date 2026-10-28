@@ -2,6 +2,10 @@
 
 This repository is the source of truth for the boat Raspberry Pi setup and application.
 
+See [WIRING.md](WIRING.md) for the latest physical pin numbers, cable colors,
+breadboard holes, and verification status for the buzzer, motion sensor, and
+temperature sensor. The GPS is not yet connected.
+
 ## Current network design
 
 - `eth0` is the home-router management and internet link whenever the cable is connected (DHCP, route metric 50).
@@ -14,7 +18,7 @@ The Pi 3's built-in Wi-Fi required Protected Management Frames (PMF) to be disab
 ## Current status (2026-10-28)
 
 - Hotspot remains active as `Kisero-Boat`, with subnet `10.42.0.0/24` and Pi address `10.42.0.1`.
-- Ethernet management uses the dedicated `kisero-home-ethernet` NetworkManager profile, bound to `eth0`, with DHCP and autoconnect enabled. Its last verified home-network address is `192.168.68.67/22` (router `192.168.68.1`). SSH is available as `admin@192.168.68.67` without joining the hotspot.
+- Ethernet management uses the dedicated `kisero-home-ethernet` NetworkManager profile, bound to `eth0`, with DHCP and autoconnect enabled. Its last verified home-network address is `192.168.68.68/22` (router `192.168.68.1`). SSH was last verified as `admin@192.168.68.68` without joining the hotspot.
 - The Ethernet MAC address observed on the Pi is **`b8:27:eb:23:e8:89`**. Use this address for a router DHCP reservation; `b8:27:eb:76:bd:dc` is the Wi-Fi MAC, not the Ethernet MAC. DHCP may change the IP unless the router reserves it.
 - The 4G UFI USB modem presents an RNDIS network adapter as `usb0` at `192.168.100.158/24`. The existing generic `netplan-eth0` profile was attached to that adapter, leaving physical Ethernet disconnected even with carrier detected. The dedicated Ethernet profile fixes this without altering the USB or hotspot profiles.
 - Home Ethernet is preferred while connected (metric 50); the USB modem is the default internet uplink aboard when Ethernet is absent (metric 100).
@@ -104,8 +108,9 @@ Hotspot setup is performed with `scripts/setup-hotspot.sh`. It prompts for the W
 
 ## Temperature and humidity sensor
 
-The SHT3x breakout uses I²C. Connect VIN to Pi 3.3 V, GND to ground, SDA to
-physical pin 3, and SCL to physical pin 5. Enable the Pi's standard I²C
+The SHT3x breakout uses I²C. The latest breadboard wiring and the missing
+soldered-header requirement are recorded in [WIRING.md](WIRING.md). VIN uses
+3.3 V, SDA uses physical pin 3, and SCL uses physical pin 5. Enable the Pi's standard I²C
 interface with `scripts/enable-i2c.sh`; a reboot is required before checking
 for the sensor at address `0x44` or `0x45`.
 
