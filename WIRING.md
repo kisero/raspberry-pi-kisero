@@ -37,8 +37,8 @@ I/O, VCC from top to bottom.
 
 The original direct-Pi wiring (VCC to 17, GND to 14, I/O to 12) produced three
 beeps, confirmed by the user. An original short rhythm was also played. The final
-breadboard arrangement preserves the same electrical connections, but has not
-yet been retested after the user rearranged the wires.
+breadboard arrangement was subsequently retested: the user confirmed hearing
+all three short beeps on 2026-10-28.
 
 - `python3 scripts/test-buzzer.py` sends three short beeps.
 - `python3 scripts/buzzer-song.py` plays a short fixed-pitch sailing rhythm.
@@ -65,10 +65,16 @@ the yellow jumper on the right, and the three connection pins at the bottom,
 the pins were identified as VCC (left), OUT (middle), GND (right). Do not transfer
 that orientation to a different sensor board without checking its pinout.
 
-These are female-to-female connections. The user reports following the wiring
-instructions; motion detection and the final fitted connections have not yet
-been checked. Allow about a minute for the PIR to settle after powering it on.
-No motion-monitoring service has been deployed yet.
+These are female-to-female connections. On 2026-10-28, the bounded GPIO26 input
+test observed HIGH, then LOW (idle) at 12.6 seconds, then HIGH again at 18.2 seconds
+while the user was instructed to move in front of the sensor. Both idle and active
+output levels were observed with an input pull-down. Allow about a minute for
+the PIR to settle after powering it on. No motion-monitoring service has been
+deployed yet.
+
+Run `python3 scripts/test-motion.py --seconds 60` from a checkout on the Pi for
+a manual test. It watches physical pin 37 / GPIO26, prints input transitions,
+and releases the GPIO when finished. It does not activate the buzzer.
 
 ## Temperature/humidity: SHT3x breakout
 
