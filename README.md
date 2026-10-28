@@ -230,3 +230,12 @@ API routes: anonymous GET `/v1/alarm`; capability-authenticated POST
 aws/template.yaml`, then `sam deploy --stack-name kisero-yachtdevice --region
 eu-north-1 --resolve-s3 --capabilities CAPABILITY_IAM` with the built template.
 Keep the existing stack, S3 bucket, SSM parameter and HTTP API.
+
+Deployment verified on 2026-10-28: CloudFormation update completed in
+`eu-north-1`; `kisero-alarm.service` is enabled and running on the Pi, with
+installed source/service checksums matching this repository. Actual PIR high
+and low transitions reached the public feed and website without a reload.
+The private page's on and off commands were acknowledged by the Pi during the
+exit delay, and the alarm was left **off**. The event outbox was empty after
+acknowledgement. This check did not deliberately sound the buzzer; the hardware's
+three-beep check is recorded in WIRING.md.
