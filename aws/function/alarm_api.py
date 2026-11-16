@@ -178,7 +178,7 @@ def connectivity_history(days=1):
 
 
 def alarm_history(days):
-    cutoff = coverage_start(days).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
     rows = query_rows(KeyConditionExpression=Key("pk").eq("ALARM") & Key("sk").between("EVENT#" + cutoff, "EVENT#~"))
     return [row for row in rows if row["armed"] is True or row["kind"] == "disarmed"]
 

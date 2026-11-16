@@ -89,6 +89,35 @@ def update_trip_index(bucket, summaries):
     return False
 
 
+def update_sensor_history(bucket, sample):
+    key = "published/sensors/history.json"
+    for attempt in range(5):
+        try:
+            history_object = s3.get_object(Bucket=bucket, Key=key)
+            history = json.loads(history_object["Body"].read())
+            condition = {"IfMatch": history_object["ETag"]}
+        except ClientError as error:
+            if error.response["ResponseMetadata"]["HTTPStatusCode"] != 404:
+                raise
+            history = {"schemaVersion": 1, "samples": []}
+            condition = {"IfNoneMatch": "*"}
+        samples = {row["observedAt"]: row for row in history["samples"]}
+        samples[sample["observedAt"]] = sample
+        clock = datetime.now(timezone.utc)
+        cutoff = (clock - timedelta(days=31)).isoformat(timespec="seconds").replace("+00:00", "Z")
+        history["samples"] = [samples[stamp] for stamp in sorted(samples) if stamp >= cutoff]
+        history["updatedAt"] = clock.isoformat(timespec="seconds").replace("+00:00", "Z")
+        try:
+            s3.put_object(Bucket=bucket, Key=key, Body=json.dumps(history, separators=(",", ":")).encode(),
+                          ContentType="application/json", ServerSideEncryption="AES256", **condition)
+            return True
+        except ClientError as error:
+            if error.response["ResponseMetadata"]["HTTPStatusCode"] not in (409, 412):
+                raise
+            time.sleep(0.05 * (attempt + 1))
+    return False
+
+
 def handler(event, context):
     if "connectionId" in event.get("requestContext", {}):
         return alarm_api.websocket(event, context)
@@ -179,24 +208,8 @@ def handler(event, context):
         except ClientError as error:
             if error.response.get("ResponseMetadata", {}).get("HTTPStatusCode") != 412:
                 raise
-        try:
-            history_object = s3.get_object(Bucket=bucket, Key="published/sensors/history.json")
-            history = json.loads(history_object["Body"].read())
-        except ClientError as error:
-            if error.response.get("ResponseMetadata", {}).get("HTTPStatusCode") != 404:
-                raise
-            history = {"schemaVersion": 1, "samples": []}
-        samples = [row for row in history.get("samples", []) if row.get("observedAt") != sample["observedAt"]]
-        samples.append(sample)
-        samples.sort(key=lambda row: row["observedAt"])
-        cutoff = datetime.now(timezone.utc) - timedelta(days=31)
-        samples = [row for row in samples
-                   if datetime.fromisoformat(row["observedAt"].replace("Z", "+00:00")) >= cutoff]
-        updated = {"schemaVersion": 1, "updatedAt": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
-                   "samples": samples}
-        s3.put_object(Bucket=bucket, Key="published/sensors/history.json",
-                      Body=json.dumps(updated, separators=(",", ":")).encode("utf-8"),
-                      ContentType="application/json", ServerSideEncryption="AES256")
+        if not update_sensor_history(bucket, sample):
+            return response(503, {"error": "sensor history busy; retry upload"}, origin)
         return response(200, {"accepted": True, "observedAt": sample["observedAt"]}, origin)
     if method == "GET" and path == "/v1/trips":
         try:
