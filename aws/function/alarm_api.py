@@ -310,6 +310,15 @@ def http(event, context, authorized, get_token):
             except ClientError as error:
                 if error.response["Error"]["Code"] != "ConditionalCheckFailedException":
                     raise
+            if kind == "triggered" and row["armed"]:
+                try:
+                    boto3.resource("dynamodb").Table(os.environ["ALARM_EMAIL_OUTBOX"]).put_item(
+                        Item={"id": event_id, "observedAt": row["observedAt"],
+                              "expiresAt": int(time.time()) + 7 * 86400},
+                        ConditionExpression="attribute_not_exists(id)")
+                except ClientError as error:
+                    if error.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                        raise
             publish({"event": row})
             return reply(200, {"accepted": True, "id": event_id})
     except (ValueError, TypeError, json.JSONDecodeError):

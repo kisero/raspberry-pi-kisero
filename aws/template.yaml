@@ -48,6 +48,7 @@ Resources:
           TOKEN_PARAMETER: !Ref DeviceTokenParameter
           WEB_ORIGIN: !Ref AllowedWebOrigin
           ALARM_TABLE: !Ref AlarmTable
+          ALARM_EMAIL_OUTBOX: !Ref AlarmEmailOutbox
           ALARM_WEBSOCKET_URL: !Sub wss://${AlarmSocket}.execute-api.${AWS::Region}.${AWS::URLSuffix}/live
           ALARM_WS_MANAGEMENT_URL: !Sub https://${AlarmSocket}.execute-api.${AWS::Region}.${AWS::URLSuffix}/live
       Policies:
@@ -56,6 +57,9 @@ Resources:
             - Effect: Allow
               Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:DeleteItem, dynamodb:Query]
               Resource: !GetAtt AlarmTable.Arn
+            - Effect: Allow
+              Action: dynamodb:PutItem
+              Resource: !GetAtt AlarmEmailOutbox.Arn
             - Effect: Allow
               Action: dynamodb:ConditionCheckItem
               Resource: !GetAtt AlarmTable.Arn
@@ -192,6 +196,56 @@ Resources:
         Enabled: true
       SSESpecification:
         SSEEnabled: true
+  AlarmEmailTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: Kisero Boat Alarm
+  AlarmEmailOutbox:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      StreamSpecification:
+        StreamViewType: NEW_IMAGE
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+      SSESpecification:
+        SSEEnabled: true
+  AlarmEmailSender:
+    Type: AWS::Serverless::Function
+    Properties:
+      Runtime: python3.12
+      CodeUri: function/
+      Handler: alarm_email.handler
+      Timeout: 10
+      Environment:
+        Variables:
+          ALARM_EMAIL_TOPIC: !Ref AlarmEmailTopic
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action: sns:Publish
+              Resource: !Ref AlarmEmailTopic
+            - Effect: Allow
+              Action: [dynamodb:DescribeStream, dynamodb:GetRecords, dynamodb:GetShardIterator, dynamodb:ListStreams]
+              Resource: !Sub "${AlarmEmailOutbox.Arn}/stream/*"
+  AlarmEmailEvents:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      FunctionName: !Ref AlarmEmailSender
+      EventSourceArn: !GetAtt AlarmEmailOutbox.StreamArn
+      StartingPosition: TRIM_HORIZON
+      BatchSize: 1
+      FilterCriteria:
+        Filters:
+          - Pattern: '{"dynamodb":{"NewImage":{"observedAt":{"S":[{"exists":true}]}}}}'
   AlarmSocket:
     Type: AWS::ApiGatewayV2::Api
     Properties:
