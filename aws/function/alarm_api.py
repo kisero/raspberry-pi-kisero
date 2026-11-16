@@ -244,8 +244,13 @@ def http(event, context, authorized, get_token):
     if method == "GET" and path == "/v1/alarm/control":
         current = control()
         boat_fix, phone_fix = boat.read(table(), "BOAT"), boat.read(table(), "PHONE")
-        _, reason = boat.decide(boat_fix, phone_fix, time.time())
-        return reply(200, {"mode": current.get("mode", "manual"), "reason": reason})
+        clock = time.time()
+        _, reason = boat.decide(boat_fix, phone_fix, clock)
+        distance = None
+        if boat.fresh_boat(boat_fix, clock) and boat.fresh_phone(phone_fix, clock):
+            distance = round(boat.distance(boat_fix, phone_fix))
+        return reply(200, {"mode": current.get("mode", "manual"), "reason": reason,
+                           "distanceMeters": distance})
     if path in {"/v1/alarm/owntracks", "/v1/alarm/boat"} and len(event.get("body") or "") > 4096:
         return reply(413, {"error": "location message too large"})
     try:

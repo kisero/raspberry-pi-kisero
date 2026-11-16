@@ -56,7 +56,7 @@ def save(table, item):
 
 def public(table, clock):
     boat = read(table, "BOAT")
-    if not boat or float(boat["tst"]) < clock - BOAT_FRESH:
+    if not fresh_boat(boat, clock):
         return {"state": "unknown"}
     nearest = [(distance(boat, {"lat": lat, "lon": lon}), radius, name) for lat, lon, radius, name in PLACES]
     meters, radius, name = min(nearest)
@@ -64,14 +64,23 @@ def public(table, clock):
             "observedAt": float(boat["tst"])}
 
 
+def fresh_boat(boat, clock):
+    return boat is not None and float(boat["tst"]) >= clock - BOAT_FRESH
+
+
+def fresh_phone(phone, clock):
+    return (phone is not None and float(phone["tst"]) >= clock - PHONE_FRESH
+            and float(phone["acc"]) <= 60)
+
+
 def decide(boat, phone, clock):
-    if not boat or float(boat["tst"]) < clock - BOAT_FRESH:
+    if not fresh_boat(boat, clock):
         return None, "boat-gps-unavailable"
     if boat["state"] == "sailing":
         return False, "underway"
     if boat["state"] != "moored":
         return None, "boat-gps-unavailable"
-    if not phone or float(phone["tst"]) < clock - PHONE_FRESH or float(phone["acc"]) > 60:
+    if not fresh_phone(phone, clock):
         return None, "phone-location-unavailable"
     meters = distance(boat, phone)
     # Reserve 25 m for the boat receiver; don't switch if uncertainty straddles the limit.
