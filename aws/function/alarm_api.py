@@ -218,14 +218,14 @@ def http(event, context, authorized, get_token):
                 ExpressionAttributeValues={":a": False if automatic else payload["armed"],
                                            ":m": "auto" if automatic else "manual", ":t": now(), ":one": 1})
             if automatic:
-                boat.auto(table(), control(), now)
+                boat.auto(table(), now)
             publish()
             return reply(200, state())
         if method == "POST" and path in {"/v1/alarm/owntracks", "/v1/alarm/boat"}:
             kind = "PHONE" if path.endswith("owntracks") else "BOAT"
             if kind == "PHONE" and payload.get("_type") != "location":
                 return reply(200, [])
-            if boat.save(table(), boat.fix(payload, kind, time.time())) and boat.auto(table(), control(), now):
+            if boat.save(table(), boat.fix(payload, kind, time.time())) and boat.auto(table(), now):
                 publish()
             return reply(200, [] if kind == "PHONE" else {"accepted": True})
         if method == "POST" and path == "/v1/alarm/device":

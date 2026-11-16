@@ -49,6 +49,10 @@ def trip_for(raw, start, end, zone, interval):
     if len(unique) < 2 or min(unique) > start+interval or max(unique) < end-interval:
         raise ValueError("export does not cover the outing")
     ordered = sorted(unique.items())
+    if len(ordered) * interval * 2 < end - start or any(
+        right - left > 20 * 60 for (left, _), (right, _) in zip(ordered, ordered[1:])
+    ):
+        raise ValueError("too many readings are missing within the outing")
     group = [p for _, p in ordered]
     track = [[p["_longitude"], p["_latitude"], datetime.fromtimestamp(t, timezone.utc).isoformat(timespec="seconds").removesuffix("+00:00"), p["_sog"]] for t,p in ordered]
     speed = [point[3] for point in track]

@@ -83,23 +83,40 @@ def decide(boat, phone, clock):
     return None, "near-boundary"
 
 
-def auto(table, control, stamp):
-    if control.get("mode") != "auto":
-        return False
-    desired, _ = decide(read(table, "BOAT"), read(table, "PHONE"), time.time())
-    if desired is None or desired == control["armed"]:
-        return False
-    try:
-        table.update_item(Key=KEY, UpdateExpression="SET armed=:a, updatedAt=:t ADD #v :one",
-                          ConditionExpression="#m=:auto AND #v=:current",
-                          ExpressionAttributeNames={"#m": "mode", "#v": "version"},
-                          ExpressionAttributeValues={":a": desired, ":t": stamp(), ":one": 1,
-                                                     ":auto": "auto", ":current": control["version"]})
-        return True
-    except ClientError as e:
-        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
-            raise
-        return False
+def auto(table, stamp):
+    for _ in range(3):
+        control = table.get_item(Key=KEY, ConsistentRead=True).get("Item", {})
+        if control.get("mode") != "auto":
+            return False
+        boat_fix, phone_fix = read(table, "BOAT"), read(table, "PHONE")
+        desired, reason = decide(boat_fix, phone_fix, time.time())
+        if desired is None or desired == control["armed"]:
+            return False
+        fixes = [boat_fix] if reason == "underway" else [boat_fix, phone_fix]
+        checks = [{"ConditionCheck": {
+            "TableName": table.name,
+            "Key": {"pk": fix["pk"], "sk": fix["sk"]},
+            "ConditionExpression": "tst=:observed",
+            "ExpressionAttributeValues": {":observed": fix["tst"]},
+        }} for fix in fixes]
+        checks.append({"Update": {
+            "TableName": table.name, "Key": KEY,
+            "UpdateExpression": "SET armed=:a, updatedAt=:t ADD #v :one",
+            "ConditionExpression": "#m=:auto AND #v=:current",
+            "ExpressionAttributeNames": {"#m": "mode", "#v": "version"},
+            "ExpressionAttributeValues": {":a": desired, ":t": stamp(), ":one": 1,
+                                          ":auto": "auto", ":current": control["version"]},
+        }})
+        try:
+            table.meta.client.transact_write_items(TransactItems=checks)
+            return True
+        except ClientError as error:
+            if error.response["Error"]["Code"] != "TransactionCanceledException":
+                raise
+            reasons = {reason.get("Code") for reason in error.response.get("CancellationReasons", [])}
+            if reasons - {None, "None", "ConditionalCheckFailed", "TransactionConflict"}:
+                raise
+    return False
 
 
 def phone_authorized(header, device_token):

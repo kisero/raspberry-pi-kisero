@@ -57,6 +57,12 @@ Resources:
               Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:DeleteItem, dynamodb:Query]
               Resource: !GetAtt AlarmTable.Arn
             - Effect: Allow
+              Action: dynamodb:ConditionCheckItem
+              Resource: !GetAtt AlarmTable.Arn
+              Condition:
+                ForAllValues:StringEquals:
+                  dynamodb:LeadingKeys: [POSITION]
+            - Effect: Allow
               Action: execute-api:ManageConnections
               Resource: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${AlarmSocket}/live/POST/@connections/*
             - Effect: Allow
