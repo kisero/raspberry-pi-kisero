@@ -94,7 +94,9 @@ def timestamp(value):
     return parsed.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
+HISTORY_DAYS = 31
 _connectivity_started = None
+_extended_history_started = None
 
 def connectivity_start():
     global _connectivity_started
@@ -116,28 +118,69 @@ def record_connectivity(received_at):
                 raise
             connectivity_start()
     epoch = int(datetime.fromisoformat(received_at.replace("Z", "+00:00")).timestamp())
+    global _extended_history_started
+    if _extended_history_started is None:
+        result = table().update_item(Key={"pk": "CONNECTIVITY", "sk": "HISTORY"},
+            UpdateExpression="SET startedAt = if_not_exists(startedAt, :now)",
+            ExpressionAttributeValues={":now": received_at}, ReturnValues="ALL_NEW")
+        _extended_history_started = result["Attributes"]["startedAt"]
     # At most one entry per 30-second bin; a busy PIR doesn't inflate the history.
     bucket = datetime.fromtimestamp(epoch // 30 * 30, timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
     try:
         table().put_item(Item={"pk": "CONNECTIVITY", "sk": "BEAT#" + bucket,
-            "receivedAt": received_at, "expiresAt": epoch + 7 * 86400},
+            "receivedAt": received_at, "expiresAt": epoch + HISTORY_DAYS * 86400},
             ConditionExpression="attribute_not_exists(pk)")
     except ClientError as error:
         if error.response["Error"]["Code"] != "ConditionalCheckFailedException":
             raise
 
 
-def connectivity_history():
-    cutoff = (datetime.now(timezone.utc) - timedelta(hours=24, seconds=90)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
-    query = {"KeyConditionExpression": Key("pk").eq("CONNECTIVITY") & Key("sk").between("BEAT#" + cutoff, "BEAT#~")}
-    beats = []
+def query_rows(**query):
+    dynamo = table()
     while True:
-        result = table().query(**query)
-        beats.extend(row["receivedAt"] for row in result.get("Items", []))
+        result = dynamo.query(**query)
+        yield from result.get("Items", [])
         if not result.get("LastEvaluatedKey"):
-            break
+            return
         query["ExclusiveStartKey"] = result["LastEvaluatedKey"]
-    return {"startedAt": connectivity_start(), "beats": beats, "graceSeconds": 90}
+
+
+def coverage_start(days):
+    clock = datetime.now(timezone.utc)
+    recent = clock - timedelta(days=7)
+    start = table().get_item(Key={"pk": "CONNECTIVITY", "sk": "HISTORY"}).get("Item", {}).get("startedAt")
+    extended = datetime.fromisoformat(start.replace("Z", "+00:00")) if start else recent
+    return max(clock - timedelta(days=days), min(recent, extended))
+
+
+def connectivity_history(days=1):
+    if days == 1:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=1, seconds=90)
+        started = connectivity_start()
+    else:
+        coverage = coverage_start(days)
+        cutoff = coverage - timedelta(seconds=90)
+        installation = connectivity_start()
+        started = max(installation, coverage.isoformat(timespec="milliseconds").replace("+00:00", "Z")) if installation else None
+    cutoff_stamp = cutoff.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    rows = query_rows(KeyConditionExpression=Key("pk").eq("CONNECTIVITY") & Key("sk").between("BEAT#" + cutoff_stamp, "BEAT#~"),
+                      ProjectionExpression="receivedAt")
+    if days == 1:
+        return {"startedAt": started, "beats": [row["receivedAt"] for row in rows], "graceSeconds": 90}
+    intervals = []
+    for row in rows:
+        stamp = int(datetime.fromisoformat(row["receivedAt"].replace("Z", "+00:00")).timestamp())
+        if intervals and stamp <= intervals[-1][1]:
+            intervals[-1][1] = stamp + 90
+        else:
+            intervals.append([stamp, stamp + 90])
+    return {"startedAt": started, "intervals": intervals, "graceSeconds": 90}
+
+
+def alarm_history(days):
+    cutoff = coverage_start(days).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    rows = query_rows(KeyConditionExpression=Key("pk").eq("ALARM") & Key("sk").between("EVENT#" + cutoff, "EVENT#~"))
+    return [row for row in rows if row["armed"] is True or row["kind"] == "disarmed"]
 
 
 def device_status(payload):
@@ -168,6 +211,11 @@ def http(event, context, authorized, get_token):
     path = event.get("rawPath", "")
     headers = {k.lower(): v for k, v in event.get("headers", {}).items()}
     if method == "GET" and path == "/v1/alarm":
+        days = (event.get("queryStringParameters") or {}).get("days")
+        if days in ("7", "30"):
+            result = reply(200, {"events": alarm_history(int(days)), "connectivity": connectivity_history(int(days))})
+            result["headers"]["cache-control"] = "public, max-age=120"
+            return result
         result = state()
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
         records = table().query(KeyConditionExpression=Key("pk").eq("ALARM") & Key("sk").between(
@@ -253,7 +301,7 @@ def http(event, context, authorized, get_token):
                     raise
             try:
                 table().put_item(Item={"pk": "ALARM", "sk": "EVENT#" + row["observedAt"] + "#" + event_id,
-                    "expiresAt": int(time.time()) + 7 * 86400, **row}, ConditionExpression="attribute_not_exists(pk)")
+                    "expiresAt": int(time.time()) + HISTORY_DAYS * 86400, **row}, ConditionExpression="attribute_not_exists(pk)")
             except ClientError as error:
                 if error.response["Error"]["Code"] != "ConditionalCheckFailedException":
                     raise

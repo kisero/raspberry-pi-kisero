@@ -189,7 +189,7 @@ def handler(event, context):
         samples = [row for row in history.get("samples", []) if row.get("observedAt") != sample["observedAt"]]
         samples.append(sample)
         samples.sort(key=lambda row: row["observedAt"])
-        cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=31)
         samples = [row for row in samples
                    if datetime.fromisoformat(row["observedAt"].replace("Z", "+00:00")) >= cutoff]
         updated = {"schemaVersion": 1, "updatedAt": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
