@@ -93,6 +93,30 @@ Resources:
             ApiId: !Ref BoatApi
             Path: /v1/alarm/control
             Method: POST
+        AlarmModeRead:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref BoatApi
+            Path: /v1/alarm/control
+            Method: GET
+        BoatPositionRead:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref BoatApi
+            Path: /v1/alarm/boat
+            Method: GET
+        BoatPositionWrite:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref BoatApi
+            Path: /v1/alarm/boat
+            Method: POST
+        OwnTracks:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref BoatApi
+            Path: /v1/alarm/owntracks
+            Method: POST
         AlarmDeviceRead:
           Type: HttpApi
           Properties:

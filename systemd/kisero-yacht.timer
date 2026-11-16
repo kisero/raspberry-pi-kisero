@@ -1,0 +1,9 @@
+[Unit]
+Description=Retry pending Yacht Devices voyages
+
+[Timer]
+OnBootSec=3min
+OnUnitInactiveSec=3min
+
+[Install]
+WantedBy=timers.target

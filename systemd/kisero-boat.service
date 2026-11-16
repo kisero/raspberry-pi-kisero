@@ -1,0 +1,20 @@
+[Unit]
+Description=Kisero USB GPS and voyage boundary recorder
+After=network.target
+
+[Service]
+User=admin
+SupplementaryGroups=dialout
+EnvironmentFile=/etc/kisero/sensor.env
+EnvironmentFile=-/etc/kisero/boat.env
+ExecStart=/usr/bin/python3 /opt/kisero/collector/boat_tracker.py
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/kisero
+
+[Install]
+WantedBy=multi-user.target

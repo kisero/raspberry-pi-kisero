@@ -7,6 +7,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
+import boat
 import boto3
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
@@ -44,7 +45,8 @@ def control():
 
 def state():
     device = table().get_item(Key={"pk": "ALARM", "sk": "DEVICE"}, ConsistentRead=True).get("Item")
-    return {"control": control(), "device": plain(device) if device else None,
+    public_control = {name: value for name, value in control().items() if name != "mode"}
+    return {"control": public_control, "device": plain(device) if device else None,
             "serverTime": now(), "websocketUrl": os.environ["ALARM_WEBSOCKET_URL"]}
 
 
@@ -173,32 +175,59 @@ def http(event, context, authorized, get_token):
         result["events"] = plain(list(reversed(records.get("Items", []))))
         result["connectivity"] = connectivity_history()
         return reply(200, result)
-    if method == "POST" and path == "/v1/alarm/control":
+    if path == "/v1/alarm/control":
         # A purpose-specific capability is derived from the existing device secret.
         # It can control the alarm but cannot upload data using the device API.
         expected = hmac.new(get_token().encode(), b"kisero-alarm-control-v1", hashlib.sha256).hexdigest()
         if not hmac.compare_digest(headers.get("authorization", ""), "Bearer " + expected):
             return reply(401, {"error": "private control link required"})
-    elif path in {"/v1/alarm/device", "/v1/motion"}:
+    elif path == "/v1/alarm/owntracks":
+        if not boat.phone_authorized(headers.get("authorization", ""), get_token()):
+            return reply(401, {"error": "unauthorized"})
+    elif path == "/v1/alarm/boat" and method == "GET":
+        return reply(200, boat.public(table(), time.time()))
+    elif path in {"/v1/alarm/device", "/v1/motion", "/v1/alarm/boat"}:
         if not authorized(headers):
             return reply(401, {"error": "unauthorized"})
     else:
         return reply(404, {"error": "not found"})
     if method == "GET" and path == "/v1/alarm/device":
         return reply(200, {"control": control()})
+    if method == "GET" and path == "/v1/alarm/control":
+        current = control()
+        boat_fix, phone_fix = boat.read(table(), "BOAT"), boat.read(table(), "PHONE")
+        _, reason = boat.decide(boat_fix, phone_fix, time.time())
+        return reply(200, {"mode": current.get("mode", "manual"), "reason": reason})
+    if path in {"/v1/alarm/owntracks", "/v1/alarm/boat"} and len(event.get("body") or "") > 4096:
+        return reply(413, {"error": "location message too large"})
     try:
-        payload = json.loads(event.get("body") or "{}")
+        payload = json.loads(event.get("body") or ("{}" if path != "/v1/alarm/owntracks" else '{"_type":"ignore"}'))
         if not isinstance(payload, dict):
             raise ValueError("object required")
         if method == "POST" and path == "/v1/alarm/control":
-            if not isinstance(payload.get("armed"), bool):
+            automatic = payload.get("mode") == "auto"
+            if not automatic and not isinstance(payload.get("armed"), bool):
                 raise ValueError("armed must be true or false")
-            table().update_item(Key={"pk": "ALARM", "sk": "CONTROL"},
-                UpdateExpression="SET armed=:a, updatedAt=:t ADD #v :one",
-                ExpressionAttributeNames={"#v": "version"},
-                ExpressionAttributeValues={":a": payload["armed"], ":t": now(), ":one": 1})
+            if automatic:
+                # Preserve the currently requested state until both feeds justify a change.
+                expression = "SET #m=:m, updatedAt=:t, armed=if_not_exists(armed,:a) ADD #v :one"
+            else:
+                expression = "SET #m=:m, updatedAt=:t, armed=:a ADD #v :one"
+            table().update_item(Key=boat.KEY, UpdateExpression=expression,
+                ExpressionAttributeNames={"#m": "mode", "#v": "version"},
+                ExpressionAttributeValues={":a": False if automatic else payload["armed"],
+                                           ":m": "auto" if automatic else "manual", ":t": now(), ":one": 1})
+            if automatic:
+                boat.auto(table(), control(), now)
             publish()
             return reply(200, state())
+        if method == "POST" and path in {"/v1/alarm/owntracks", "/v1/alarm/boat"}:
+            kind = "PHONE" if path.endswith("owntracks") else "BOAT"
+            if kind == "PHONE" and payload.get("_type") != "location":
+                return reply(200, [])
+            if boat.save(table(), boat.fix(payload, kind, time.time())) and boat.auto(table(), control(), now):
+                publish()
+            return reply(200, [] if kind == "PHONE" else {"accepted": True})
         if method == "POST" and path == "/v1/alarm/device":
             received_at = device_status(payload)
             publish({"connectivityBeat": received_at, "connectivityStartedAt": connectivity_start()})

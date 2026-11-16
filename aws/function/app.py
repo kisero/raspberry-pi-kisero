@@ -58,6 +58,37 @@ def normalize_sensor_sample(payload):
             "temperatureC": round(temperature, 2), "humidityPct": round(humidity, 1)}
 
 
+TRIP_FIELDS = ("id", "start", "end", "pointCount", "distanceNm", "averageSogKn", "maxSogKn")
+READING_FIELDS = {"TWS", "AWS", "TWA", "AWA", "TWD", "Depth", "Heading", "Rudder Angle", "STW"}
+
+
+def update_trip_index(bucket, summaries):
+    """Merge summaries using a conditional write so concurrent arrivals cannot lose trips."""
+    key = "published/index.json"
+    for attempt in range(5):
+        try:
+            obj = s3.get_object(Bucket=bucket, Key=key)
+            index = json.loads(obj["Body"].read())
+            condition = {"IfMatch": obj["ETag"]}
+        except ClientError as error:
+            if error.response["ResponseMetadata"]["HTTPStatusCode"] != 404:
+                raise
+            index = {"schemaVersion": 1, "trips": []}
+            condition = {"IfNoneMatch": "*"}
+        trips = {trip["id"]: trip for trip in index["trips"]}
+        trips.update((trip["id"], trip) for trip in summaries)
+        index["trips"] = sorted(trips.values(), key=lambda trip: (trip["start"], trip["id"]), reverse=True)
+        try:
+            s3.put_object(Bucket=bucket, Key=key, Body=json.dumps(index).encode(),
+                          ContentType="application/json", ServerSideEncryption="AES256", **condition)
+            return True
+        except ClientError as error:
+            if error.response["ResponseMetadata"]["HTTPStatusCode"] not in (409, 412):
+                raise
+            time.sleep(0.05 * (attempt + 1))
+    return False
+
+
 def handler(event, context):
     if "connectionId" in event.get("requestContext", {}):
         return alarm_api.websocket(event, context)
@@ -86,11 +117,11 @@ def handler(event, context):
         except ClientError as error:
             if error.response.get("ResponseMetadata", {}).get("HTTPStatusCode") != 412:
                 raise
-        summaries = []
+        safe_trips = []
         if len(derived) > 100:
             return response(400, {"error": "too many trips"}, origin)
         for trip in derived:
-            trip_id = trip.get("id", "")
+            trip_id = trip.get("id", "") if isinstance(trip, dict) else ""
             if not isinstance(trip_id, str) or not trip_id.replace("T", "").replace("Z", "").replace("_", "").isalnum():
                 return response(400, {"error": "invalid trip id"}, origin)
             track = trip.get("track")
@@ -98,21 +129,34 @@ def handler(event, context):
                 return response(400, {"error": "invalid track"}, origin)
             for point in track:
                 if (not isinstance(point, list) or len(point) != 4 or
-                    not all(isinstance(value, (int, float)) for value in point[:2] + point[3:]) or
+                    not all(type(value) in (int, float) and math.isfinite(value) for value in point[:2] + point[3:]) or
                     not (-180 <= point[0] <= 180 and -90 <= point[1] <= 90) or
                     not isinstance(point[2], str)):
                     return response(400, {"error": "invalid track point"}, origin)
-            safe_trip = {key: trip[key] for key in ("id", "start", "end", "pointCount", "distanceNm", "averageSogKn", "maxSogKn") if key in trip}
-            safe_trip["track"] = track
-            if len(safe_trip) != 8:
+            if not all(key in trip for key in TRIP_FIELDS) or not all(isinstance(trip[key], str) for key in ("start", "end")):
                 return response(400, {"error": "trip summary is incomplete"}, origin)
-            s3.put_object(Bucket=bucket, Key=f"published/trips/{trip_id}.json",
-                          Body=json.dumps(safe_trip, separators=(",", ":")).encode(),
+            safe_trip = {key: trip[key] for key in TRIP_FIELDS}
+            safe_trip["track"] = track
+            if "readings" in trip:
+                readings = trip["readings"]
+                times = {point[2] for point in track}
+                if not isinstance(readings, dict) or not readings.keys() <= times:
+                    return response(400, {"error": "invalid readings timestamps"}, origin)
+                for row in readings.values():
+                    if not isinstance(row, dict) or not row.keys() <= READING_FIELDS or not all(
+                        type(value) in (int, float) and math.isfinite(value) for value in row.values()
+                    ):
+                        return response(400, {"error": "invalid readings"}, origin)
+                if readings:
+                    safe_trip["readings"] = readings
+            safe_trips.append(safe_trip)
+        for trip in safe_trips:
+            s3.put_object(Bucket=bucket, Key=f"published/trips/{trip['id']}.json",
+                          Body=json.dumps(trip, separators=(",", ":")).encode(),
                           ContentType="application/json", ServerSideEncryption="AES256")
-            summaries.append({key: safe_trip[key] for key in ("id", "start", "end", "pointCount", "distanceNm", "averageSogKn", "maxSogKn")})
-        index = {"schemaVersion": 1, "trips": summaries}
-        s3.put_object(Bucket=bucket, Key="published/index.json", Body=json.dumps(index).encode(),
-                      ContentType="application/json", ServerSideEncryption="AES256")
+        summaries = [{key: trip[key] for key in TRIP_FIELDS} for trip in safe_trips]
+        if summaries and not update_trip_index(bucket, summaries):
+            return response(503, {"error": "trip index busy; retry upload"}, origin)
         return response(200, {"accepted": True, "sha256": digest}, origin)
     if method == "POST" and path == "/v1/sensors":
         if not authorized(event.get("headers", {})):

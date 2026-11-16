@@ -1,0 +1,16 @@
+[Unit]
+Description=Collect completed Yacht Devices voyages
+After=network-online.target kisero-boat.service
+
+[Service]
+Type=oneshot
+User=admin
+EnvironmentFile=/etc/kisero/sensor.env
+EnvironmentFile=-/etc/kisero/boat.env
+ExecStart=/usr/bin/python3 /opt/kisero/collector/yacht_fetch.py
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/kisero
+PrivateTmp=true
