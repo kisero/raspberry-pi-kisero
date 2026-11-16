@@ -54,7 +54,7 @@ def trip_for(raw, start, end, zone, interval):
     speed = [point[3] for point in track]
     if any(not math.isfinite(v) or v < 0 for v in speed) or len(track) > 20000:
         raise ValueError("invalid track")
-    channels = ("TWS","AWS","TWA","AWA","TWD","Depth","Heading","Rudder Angle","STW")
+    channels = ("TWS", "AWS", "TWA", "AWA", "TWD", "Depth", "Heading", "Rudder", "STW", "Water Temperature")
     readings = {}
     for (_, point), coords in zip(ordered, track):
         row = {}
@@ -62,7 +62,7 @@ def trip_for(raw, start, end, zone, interval):
             try:
                 value = float(point.get(key, "").replace(",", "."))
                 if math.isfinite(value):
-                    row[key] = value
+                    row["WaterTemperature" if key == "Water Temperature" else key] = value
             except ValueError:
                 pass
         if row:

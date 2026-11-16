@@ -59,7 +59,7 @@ def normalize_sensor_sample(payload):
 
 
 TRIP_FIELDS = ("id", "start", "end", "pointCount", "distanceNm", "averageSogKn", "maxSogKn")
-READING_FIELDS = {"TWS", "AWS", "TWA", "AWA", "TWD", "Depth", "Heading", "Rudder Angle", "STW"}
+READING_FIELDS = {"TWS", "AWS", "TWA", "AWA", "TWD", "Depth", "Heading", "Rudder", "STW", "WaterTemperature"}
 
 
 def update_trip_index(bucket, summaries):
