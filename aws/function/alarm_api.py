@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import boat
+import home_snapshot
 import boto3
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
@@ -202,6 +203,8 @@ def device_status(payload):
         if error.response["Error"]["Code"] != "ConditionalCheckFailedException":
             raise
 
+    else:
+        home_snapshot.record(table(), "device", item)
     record_connectivity(item["receivedAt"])
     return item["receivedAt"]
 
@@ -278,8 +281,13 @@ def http(event, context, authorized, get_token):
             kind = "PHONE" if path.endswith("owntracks") else "BOAT"
             if kind == "PHONE" and payload.get("_type") != "location":
                 return reply(200, [])
-            if boat.save(table(), boat.fix(payload, kind, time.time())) and boat.auto(table(), now):
-                publish()
+            clock = time.time()
+            fix = boat.fix(payload, kind, clock)
+            if boat.save(table(), fix):
+                if kind == "BOAT":
+                    home_snapshot.record(table(), "position", boat.public_fix(fix, clock))
+                if boat.auto(table(), now):
+                    publish()
             return reply(200, [] if kind == "PHONE" else {"accepted": True})
         if method == "POST" and path == "/v1/alarm/device":
             received_at = device_status(payload)

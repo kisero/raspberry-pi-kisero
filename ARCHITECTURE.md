@@ -61,3 +61,10 @@ worker publishes the email through SNS.
 The design uses request-based services and object storage. Keep the
 existing $5 budget alert separate from the application stack. See the
 [AWS deployment runbook](aws/DEPLOYMENT.md).
+
+The public homepage reads the last-known telemetry from `GET /v1/home`.
+The authenticated uploads update independent cabin, coarse position, and
+device fields in a single durable DynamoDB item. The existing published
+S3 index supplies the trip summaries. Page visits read these stored values.
+The browser keeps a local copy and marks the boat offline 60 seconds after
+its last server-received heartbeat.

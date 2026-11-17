@@ -151,6 +151,12 @@ Resources:
             ApiId: !Ref BoatApi
             Path: /v1/ingest
             Method: POST
+        HomeSnapshot:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref BoatApi
+            Path: /v1/home
+            Method: GET
         Trips:
           Type: HttpApi
           Properties:

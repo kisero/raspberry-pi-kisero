@@ -55,7 +55,10 @@ def save(table, item):
 
 
 def public(table, clock):
-    boat = read(table, "BOAT")
+    return public_fix(read(table, "BOAT"), clock)
+
+
+def public_fix(boat, clock):
     if not fresh_boat(boat, clock):
         return {"state": "unknown"}
     nearest = [(distance(boat, {"lat": lat, "lon": lon}), radius, name) for lat, lon, radius, name in PLACES]

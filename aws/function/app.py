@@ -6,6 +6,7 @@ import math
 import os
 import time
 import alarm_api
+import home_snapshot
 from datetime import datetime, timedelta, timezone
 import boto3
 from botocore.exceptions import ClientError
@@ -210,7 +211,21 @@ def handler(event, context):
                 raise
         if not update_sensor_history(bucket, sample):
             return response(503, {"error": "sensor history busy; retry upload"}, origin)
+        home_snapshot.record(alarm_api.table(), "cabin", sample)
         return response(200, {"accepted": True, "observedAt": sample["observedAt"]}, origin)
+    if method == "GET" and path == "/v1/home":
+        saved = alarm_api.table().get_item(Key=home_snapshot.KEY).get("Item", {})
+        try:
+            archive = s3.get_object(Bucket=bucket, Key="published/index.json")
+            trips = json.loads(archive["Body"].read())["trips"]
+        except ClientError as error:
+            if error.response["ResponseMetadata"]["HTTPStatusCode"] != 404:
+                raise
+            trips = []
+        body = alarm_api.plain({name: saved[name] for name in home_snapshot.FIELDS if name in saved})
+        result = response(200, {"schemaVersion": 1, "trips": trips, **body}, origin)
+        result["headers"]["cache-control"] = "public, max-age=10, stale-if-error=86400"
+        return result
     if method == "GET" and path == "/v1/trips":
         try:
             obj = s3.get_object(Bucket=bucket, Key="published/index.json")
