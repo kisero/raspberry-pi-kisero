@@ -100,12 +100,17 @@ each original record in the archived CSV's `Memory Record` column. The CSV's
 
 The USB GPS queues a voyage when it confirms the boat has stopped. The collector
 retries until it can read the corresponding Yacht Devices track, allowing up to
-three minutes of missing readings at the boundaries. A gap of ten minutes within
-a GPS-defined voyage leaves it queued for review or a later retry.
+three minutes of missing readings at the boundaries. Gaps larger than four
+logging intervals trigger a second read and a merge of both snapshots. A gap of
+ten minutes within a GPS-defined voyage leaves it queued for a later retry.
+The Pi persists a valid export before contacting AWS, so an internet outage
+does not prevent it from capturing the track.
 
-Run `python3 collector/yacht_fetch.py --backfill MEMORY_HTML` with
-`KISERO_API_URL` set to preview historical voyages. With the existing upload
-environment, add `--publish` to archive the full snapshot and publish completed
-voyages. Historical boundaries use the gateway's recorded speed and infer the
+Run `python3 collector/yacht_fetch.py --backfill MEMORY_HTML [MEMORY_HTML ...]`
+with `KISERO_API_URL` set to preview historical voyages. Provide multiple
+snapshots to recover records omitted by individual downloads. With the existing
+upload environment, add `--publish` to archive the merged records and publish
+completed voyages. Historical boundaries use the gateway's recorded speed and infer the
 end after ten minutes of stopped readings or a ten-minute gap followed by a later
-record. Outings under ten minutes and intervals already on the website are skipped.
+record. Outings under ten minutes are skipped. Existing imported tracks are
+updated only when the same start and end have more recovered points.

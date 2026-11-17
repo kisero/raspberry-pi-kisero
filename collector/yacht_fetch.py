@@ -25,7 +25,8 @@ LOG = logging.getLogger("kisero-yacht")
 LIMIT = 3 * 1024 * 1024
 EPOCH = datetime(2015, 1, 1)
 KNOTS = 36 / 1852  # cm/s to knots
-MEMORY = re.compile(rb"<div\b[^>]*\bid=['\"]D['\"][^>]*>(.*?)</div>.*?</html\s*>", re.I | re.S)
+MEMORY_START = re.compile(rb"<div\b[^>]*\bid=['\"]D['\"][^>]*>", re.I)
+MEMORY_END = re.compile(rb"</div>.*?</html\s*>", re.I | re.S)
 CHANNELS = ("COG", "TWS", "AWS", "TWA", "AWA", "TWD", "Depth", "Heading", "Rudder",
             "STW", "Water Temperature")
 CSV_FIELDS = ("Time", "Latitude", "Longitude", "SOG", *CHANNELS, "Memory Record")
@@ -59,12 +60,20 @@ def angle(raw):
     return None if raw == 65535 else math.degrees(raw / 10000)
 
 
-def parse_memory(html):
-    match = MEMORY.search(html)
-    if not match:
+def parse_memory(html, allow_partial=False):
+    start = MEMORY_START.search(html)
+    if not start:
+        raise ValueError("missing Yacht Devices Memory payload")
+    end = MEMORY_END.search(html, start.end())
+    if end:
+        payload = html[start.end():end.start()]
+    elif allow_partial:
+        LOG.warning("Incomplete Memory page; recovering complete blocks")
+        payload = html[start.end():].rpartition(b"\n")[0]
+    else:
         raise ValueError("incomplete Yacht Devices Memory page")
     points = []
-    for encoded in match[1].split():
+    for encoded in payload.split():
         block = base64.b64decode(encoded, validate=True)
         offset = 0
         while offset < len(block):
@@ -106,6 +115,11 @@ def parse_memory(html):
     if not points:
         raise ValueError("Memory contains no records")
     return sorted(points, key=lambda point: point["_time"])
+
+
+def merge_memory(*snapshots):
+    unique = {point["Memory Record"]: point for snapshot in snapshots for point in snapshot}
+    return sorted(unique.values(), key=lambda point: point["_time"])
 
 
 def csv_bytes(points):
@@ -213,11 +227,14 @@ def publish(raw, trips):
         raise ValueError("missing upload acknowledgement")
 
 
-def published_windows():
+def published_trips():
     api = os.environ["KISERO_API_URL"].rstrip("/")
     with urlopen(api + "/v1/trips", timeout=15) as response:
-        trips = json.load(response)["trips"]
-    for trip in trips:
+        return json.load(response)["trips"]
+
+
+def published_windows(trips=None):
+    for trip in published_trips() if trips is None else trips:
         # Legacy manual exports used the browser's Spanish local clock.
         zone = timezone.utc if trip["id"].startswith("GPS_") else ZoneInfo("Europe/Madrid")
         yield tuple(seconds(datetime.fromisoformat(trip[key]), zone) for key in ("start", "end"))
@@ -228,15 +245,19 @@ def overlaps(start, end, windows):
 
 
 def backfill(memory, upload):
-    points = parse_memory(memory.read_bytes())
-    windows = list(published_windows())
+    points = merge_memory(*(parse_memory(path.read_bytes(), allow_partial=True) for path in memory))
+    existing = {trip["id"]: trip for trip in published_trips()}
     voyages = []
     for group in historical_outings(gps_points(points)):
         start, end = (seconds(point["_time"]) for point in (group[0], group[-1]))
-        if overlaps(start, end, windows):
+        trip = trip_payload(group, start)
+        old = existing.get(trip["id"])
+        other_trips = (item for item in existing.values() if item["id"] != trip["id"])
+        if (old and (old["start"] != trip["start"] or old["end"] != trip["end"]
+                    or old["pointCount"] >= trip["pointCount"])) or overlaps(
+                        start, end, published_windows(other_trips)):
             LOG.info("Skipped already-published interval beginning %s UTC", group[0]["_time"])
             continue
-        trip = trip_payload(group, start)
         voyages.append(trip)
         LOG.info("%s through %s UTC, %s points, %.2f nm", trip["start"], trip["end"],
                  trip["pointCount"], trip["distanceNm"])
@@ -249,31 +270,45 @@ def backfill(memory, upload):
     LOG.info("%s records in snapshot, %s new voyages", len(points), len(voyages))
 
 
+def has_download_gap(points, start, end, interval):
+    """Look for missing blocks within the GPS window, including its boundaries."""
+    stamps = sorted({start, end} | {seconds(p["_time"]) for p in gps_points(points)
+                                     if start < seconds(p["_time"]) < end})
+    return any(b - a > 4 * interval for a, b in zip(stamps, stamps[1:]))
+
+
 def collect(url, interval):
     db = connect(os.getenv("KISERO_BOAT_DB", "/var/lib/kisero/boat.sqlite3"))
     pending = db.execute("SELECT started,ended,csv FROM trips WHERE sent=0 AND ended<=? ORDER BY started",
                          (int(time.time()) - interval,)).fetchall()
-    if not pending:
-        return
-    windows = list(published_windows())
+    windows = None
     points = None
+    reread = False
+    incomplete = False
     for start, end, raw in pending:
         try:
+            if raw is None:
+                if points is None:
+                    page = download(url)
+                    points = parse_memory(page, allow_partial=True)
+                    incomplete = MEMORY_END.search(page) is None
+                if not reread and (incomplete or has_download_gap(points, start, end, interval)):
+                    points = merge_memory(points, parse_memory(download(url), allow_partial=True))
+                    reread = True
+                group = select_outing(gps_points(points), start, end, interval)
+                raw = csv_bytes(group)
+                with db:
+                    db.execute("UPDATE trips SET csv=? WHERE started=?", (raw, start))
+                zone = timezone.utc
+            else:
+                group = read_export(io.StringIO(raw.decode("utf-8-sig")))
+                # Previously queued downloads were browser-formatted local CSVs.
+                zone = (timezone.utc if group and "Memory Record" in group[0]
+                        else ZoneInfo(os.getenv("KISERO_YACHT_CSV_TIMEZONE", "Europe/Madrid")))
+                group = select_outing(group, start, end, interval, zone)
+            if windows is None:
+                windows = list(published_windows())
             if not overlaps(start, end, windows):
-                if raw is None:
-                    if points is None:
-                        points = parse_memory(download(url))
-                    group = select_outing(gps_points(points), start, end, interval)
-                    raw = csv_bytes(group)
-                    with db:
-                        db.execute("UPDATE trips SET csv=? WHERE started=?", (raw, start))
-                    zone = timezone.utc
-                else:
-                    group = read_export(io.StringIO(raw.decode("utf-8-sig")))
-                    # Previously queued downloads were browser-formatted local CSVs.
-                    zone = (timezone.utc if "Memory Record" in group[0]
-                            else ZoneInfo(os.getenv("KISERO_YACHT_CSV_TIMEZONE", "Europe/Madrid")))
-                    group = select_outing(group, start, end, interval, zone)
                 trip = trip_payload(group, start, zone)
                 publish(raw, [trip])
                 windows.append((start, end))
@@ -288,7 +323,7 @@ def collect(url, interval):
 def main():
     from pathlib import Path
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--backfill", type=Path, metavar="MEMORY_HTML")
+    parser.add_argument("--backfill", type=Path, nargs="+", metavar="MEMORY_HTML")
     parser.add_argument("--publish", action="store_true", help="Upload the backfill through the existing API")
     args = parser.parse_args()
     if args.publish and not args.backfill:
