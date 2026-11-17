@@ -1,116 +1,63 @@
-# Yachtdevice data archive and website
+# Kisero data flow
 
-## Recommendation
-
-Use the Raspberry Pi as the collector, Amazon S3 as the long-term archive, and
-small serverless APIs to receive data and serve the website. Keep the current
-static kisero.org Amplify site. Do not run a continuously available VM or
-database for a low-volume boat track archive.
+The Pi records boat state and uploads to the AWS stack in `eu-north-1`.
+Kisero.org is a static site hosted by Amplify. The site reads the API at
+runtime, so each published voyage appears without rebuilding the website.
 
 ```text
-YDWG-02 (TCP 1458)
-   │ local Wi-Fi, Server #3 = Memory
-   ▼
-Pi collector ── durable queue + SQLite cursor/dedup ── HTTPS over 4G
-   │                                                  ▼
-   │                                    API Gateway HTTP API + Lambda
-   │                                                  │
-   │                                  private S3 raw archive
-   │                                  + public track JSON/GeoJSON
-   │                                                  ▲
-   └──────────────── kisero.org (Amplify) ── public read API
+USB GPS ────► boat tracker ────► completed voyage in SQLite
+                                         │
+Yacht Devices Memory ──────────────► voyage importer
+Cabin sensor and PIR ──────────────► local queues
+                                         │ HTTPS
+                                         ▼
+                       API Gateway + Lambda + DynamoDB + S3
+                             │                 │
+                             ▼                 ▼
+                      kisero.org          SNS alarm email
 ```
 
-## Collection and retention
+## Voyage collection
 
-- Fetch the gateway's Memory page over the hotspot after the USB GPS confirms
-  an outing has stopped. Decode its records on the Pi and match their UTC
-  timestamps to the outing.
-- Store the selected CSV in the SQLite retry queue until the API acknowledges
-  its SHA-256 digest. The raw archive retains original Memory records along with
-  their decoded values, using immutable digest-named objects. Never store boat
-  data in Git.
-- The supplied example is about 67 KB for 2 hours 17 minutes. If that same
-  rate continued 24/7, it would be roughly 0.25 GB/year before compression;
-  a decade would be around 2.5 GB. S3 Standard is a sensible first storage
-  class at this scale. Avoid lifecycle transitions until actual volume
-  warrants them. This is an order-of-magnitude estimate, not an AWS quote.
+The boat tracker confirms the start and end of an outing using the USB GPS.
+The importer then reads the Yacht Devices Memory server on port 1458 over
+the boat hotspot. It decodes the embedded records, matches them against the
+GPS time window, and persists the selected CSV before contacting AWS. The
+CSV retains each original binary record in the `Memory Record` column.
+Normalized CSV timestamps and automatically imported trip timestamps use
+UTC. The original September 13 manual import retains its export's local time.
 
-## Underway trip detection
+The importer allows up to three minutes of missing readings near either
+boundary. Gaps larger than four logging intervals or an incomplete page
+trigger a second download and merge. A gap of ten minutes inside a live
+outing leaves it queued for retry. SQLite retains each valid export until the
+API acknowledges its SHA-256 digest.
 
-Classify outings as periods moving underway, not as proof of sailing versus
-motoring. Start with a configurable speed-over-ground threshold and minimum
-duration; end after a configurable low-speed dwell. Use hysteresis so small
-speed fluctuations do not split a trip. Tune initial thresholds using the
-sample and real mooring behavior. Preserve all raw points regardless of the
-classification so trips can be recalculated later.
+The historical importer can merge several Memory captures. It infers an end
+from ten minutes of stopped readings or a ten-minute gap followed by a later
+record. It skips outings shorter than ten minutes and avoids duplicating
+existing voyages. It can improve a previous Memory import when the same trip
+boundaries have more recovered points. See the [backfill runbook](docs/boat-automation.md#historical-backfill).
 
-## AWS and website
+## Storage and access
 
-- Keep the raw S3 bucket private. The Pi sends data to an API Gateway HTTP API
-  backed by Lambda; Lambda validates uploads and writes immutable raw objects
-  to S3. Give the Pi a revocable, device-only upload credential with no direct
-  bucket listing/read permission.
-- A Lambda read endpoint serves a small trip index and per-trip GeoJSON to
-  kisero.org. The user's choice is to publish exact tracks publicly, so the
-  public output includes exact track coordinates and timestamps. Keep raw CSV
-  measurements private unless the user separately chooses to publish those
-  too. Do not put trip files in the public website Git repository or trigger
-  an Amplify rebuild for each collection.
-- Use the current website's region (`eu-north-1`) for the API and S3. Configure
-  CORS for kisero.org and 14-day CloudWatch log retention. AWS Budgets is
-  managed separately in `us-east-1`; create a monthly $5 alert for the supplied
-  email address at 80% and 100%. It sends alerts; it does not stop spending.
-- Skip RDS, EC2, ECS, NAT Gateway, and a continuously running analytics stack.
-  They add idle or operational cost without helping this volume. Keep
-  timestamped CSV as the portable source of truth; add Parquet/Athena only if
-  later analysis becomes large enough to benefit.
+| Data | Private storage | Public feed |
+| --- | --- | --- |
+| Voyage exports | Immutable, encrypted CSV objects in S3, keyed by SHA-256 digest | Trip summaries and per-trip JSON with GPS tracks, timestamps and sailing readings |
+| Cabin temperature and humidity | Individual samples in S3 | Up to 31 days of recent readings |
+| Alarm and connectivity | Alarm events in S3 and recent history in DynamoDB | Read-only snapshots, history and live WebSocket updates |
+| Current boat and phone GPS | Short-lived DynamoDB items for status and Auto alarm | Boat state and named area when available |
 
-AWS bills depend on region, free-tier eligibility, requests, storage, and
-public data transfer. API Gateway HTTP APIs bill by request/data, Lambda bills
-by invocation and runtime, and S3 has storage, request, and transfer charges.
-At this sample's scale, storage should remain tiny; public track traffic is
-the main variable cost. Check the live [S3](https://aws.amazon.com/s3/pricing/),
-[API Gateway](https://aws.amazon.com/api-gateway/pricing/),
-[Lambda](https://aws.amazon.com/lambda/pricing/), and
-[Amplify](https://aws.amazon.com/amplify/pricing/) rates before provisioning.
+The internet chart tracks successful Pi contact with AWS. It marks a gap
+longer than 90 seconds as no contact. The chart records reachability, which
+can be affected by the Pi, the uplink, or the backend.
 
-## Build order
+The Pi uses a device token stored in AWS Systems Manager Parameter Store
+and in the device's private runtime environment. The alarm page and
+OwnTracks each use a separate credential derived from that token.
+An armed buzzer trigger enters a DynamoDB notification outbox. A Lambda
+worker publishes the email through SNS.
 
-1. Onboard, confirm the YDWG-02's Memory export and actual polling/export
-   behavior, then implement the collector and test retry/dedup on real exports.
-2. Implement configurable underway detection and review its trip boundaries
-   against actual passages.
-3. Create the private archive/API and Pi-only upload credential; set budgets
-   and log retention before connecting unattended upload.
-4. Add the public trip map/data loader to kisero.org, publishing exact tracks
-   as requested. Keep raw sensor exports private.
-5. Verify end-to-end collection, public map rendering, and recovery after Pi,
-   4G, or AWS outages.
-
-## Yacht Devices Memory import
-
-The gateway's Server #3 runs in Memory mode on TCP port 1458. Configure the
-gateway's hotspot address in `/etc/kisero/boat.env`, for example
-`KISERO_YACHT_MEMORY_URL=http://10.42.0.149:1458/`. Keep the gateway on a
-stable address and set `KISERO_YACHT_SAMPLE_SECONDS` if the logging interval
-differs from 15 seconds. The collector reads the Memory page directly and keeps
-each original record in the archived CSV's `Memory Record` column. The CSV's
-`Time` column and the published GPS trip timestamps use UTC.
-
-The USB GPS queues a voyage when it confirms the boat has stopped. The collector
-retries until it can read the corresponding Yacht Devices track, allowing up to
-three minutes of missing readings at the boundaries. Gaps larger than four
-logging intervals trigger a second read and a merge of both snapshots. A gap of
-ten minutes within a GPS-defined voyage leaves it queued for a later retry.
-The Pi persists a valid export before contacting AWS, so an internet outage
-does not prevent it from capturing the track.
-
-Run `python3 collector/yacht_fetch.py --backfill MEMORY_HTML [MEMORY_HTML ...]`
-with `KISERO_API_URL` set to preview historical voyages. Provide multiple
-snapshots to recover records omitted by individual downloads. With the existing
-upload environment, add `--publish` to archive the merged records and publish
-completed voyages. Historical boundaries use the gateway's recorded speed and infer the
-end after ten minutes of stopped readings or a ten-minute gap followed by a later
-record. Outings under ten minutes are skipped. Existing imported tracks are
-updated only when the same start and end have more recovered points.
+The design uses request-based services and object storage. Keep the
+existing $5 budget alert separate from the application stack. See the
+[AWS deployment runbook](aws/DEPLOYMENT.md).

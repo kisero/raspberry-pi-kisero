@@ -1,31 +1,39 @@
-# AWS deployment notes
+# AWS deployment
 
-The SAM stack is intended for `eu-north-1` in the Kisero AWS account. It creates
-the private encrypted/versioned S3 archive and API Gateway HTTP API/Lambda. The
-monthly budget alert is a separate CloudFormation stack in `us-east-1`, where
-the AWS Budgets resource is supported. It defaults to $5 and sends actual-spend
-alerts at 80% and 100%; alerts do not cap spending.
+The live application uses the `kisero-yachtdevice` SAM stack in
+`eu-north-1`. It provides the private encrypted and versioned S3 archive,
+the HTTP API and Lambda handlers, the alarm and connectivity history table,
+the WebSocket feed, and an SNS topic for alarm email.
 
-Before deployment:
+When updating the application, use the existing stack, bucket, SSM parameter,
+and API. See the template parameters and retain the deployed values.
 
-1. Review that `/v1/trips` and `/v1/trips/{id}` intentionally make exact GPS
-   tracks and timestamps public. `/v1/sensors` exposes recent cabin temperature
-   and humidity with timestamps but no GPS location. The raw CSV and complete
-   sensor archive remain private.
-2. Choose the budget alert email and create `/kisero/boat/device-token` as an
-   SSM `SecureString` using a randomly generated token. Keep the value only on
-   the Pi in a mode-0600 secrets file. Do not enter it in Git or chat.
-3. Deploy `budget-template.yaml` in `us-east-1` with `BudgetAlertEmail` and
-   `MonthlyBudgetLimitUsd` parameters.
-4. Deploy `template.yaml` with AWS SAM in `eu-north-1`. Save the stack's
-   `ApiUrl` output.
-5. Keep the website API URL aligned with the stack output. The homepage reads
-   `/v1/sensors`; it refreshes every five minutes and displays only real sensor
-   samples. Publish only after reviewing the public track content.
-6. Put the API URL and token into `/etc/kisero/sensor.env` on the Pi (mode
-   0600), install the sensor service and timer, then confirm the API
-   acknowledgement matches the queued sample timestamp.
+```sh
+sam build --template-file aws/template.yaml
+sam deploy --stack-name kisero-yachtdevice --region eu-north-1 \
+  --resolve-s3 --capabilities CAPABILITY_IAM
+```
 
-Do not upload the supplied demonstration CSV as part of provisioning. Review
-its exact track locally first. Device-side Yachtdevice polling remains pending
-an onboard inspection of the export page's actual download request.
+## Restore or verify a deployment
+
+1. In Systems Manager Parameter Store, use the existing
+   `/kisero/boat/device-token` SecureString. For a new stack, generate a token
+   privately. Keep the value in Parameter Store and the Pi's root-owned
+   `/etc/kisero/sensor.env`, with file mode 0600.
+2. Use the stack's `ApiUrl` for `KISERO_API_URL` on the Pi and keep the
+   website's API base aligned with it. See the [Pi restore steps](../README.md#restoring-the-pi).
+3. Confirm the Pi can reach the API and its service timers are active.
+   Public read endpoints include `/v1/trips`, `/v1/trips/{id}`,
+   `/v1/sensors`, `/v1/alarm`, and `/v1/alarm/boat`. Completed voyages
+   include exact GPS tracks and timestamps. The live boat endpoint
+   shows state and a named area when available.
+4. In SNS, check the intended email address is subscribed and confirmed
+   on the **Kisero Boat Alarm** topic. A confirmed recipient receives an
+   email when the backend accepts an armed buzzer trigger.
+5. For voyage backfills and OwnTracks setup, use the
+   [boat automation runbook](../docs/boat-automation.md).
+
+The monthly budget is a separate CloudFormation stack in `us-east-1`.
+Deploy [budget-template.yaml](budget-template.yaml) with `BudgetAlertEmail`
+and `MonthlyBudgetLimitUsd` when setting it up. The default is $5, with
+actual-spend email alerts at 80% and 100%. These alerts do not cap spending.

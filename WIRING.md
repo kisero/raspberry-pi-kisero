@@ -1,6 +1,6 @@
 # Kisero Pi wiring
 
-Recorded 2026-10-28 from the user's wiring session. All Pi pin numbers below are
+Updated 2026-11-17 from the wiring sessions and onboard checks. All Pi pin numbers below are
 **physical header positions (1–40)**. They are not GPIO numbers.
 
 Shut down the Pi and unplug its power before moving wires. Each connection needs
@@ -45,8 +45,8 @@ all three short beeps on 2026-10-28.
 
 Run these manually from a checkout on the Pi with gpiozero and lgpio installed.
 Both scripts use GPIO18, switch the buzzer off, and release the GPIO afterward.
-They do not install a background alarm or connect motion detection to the buzzer.
-A fixed-pitch active buzzer produces rhythms rather than pitched melodies.
+These standalone diagnostics use the same GPIO as the running alarm service.
+See [Continuous alarm service](#continuous-alarm-service) before using them.
 
 ## Motion sensor: HW-416 / HC-SR501 type PIR
 
@@ -69,54 +69,71 @@ These are female-to-female connections. On 2026-10-28, the bounded GPIO26 input
 test observed HIGH, then LOW (idle) at 12.6 seconds, then HIGH again at 18.2 seconds
 while the user was instructed to move in front of the sensor. Both idle and active
 output levels were observed with an input pull-down. Allow about a minute for
-the PIR to settle after powering it on. No motion-monitoring service has been
-deployed yet.
+the PIR to settle after powering it on. The continuous alarm service is installed.
 
 Run `python3 scripts/test-motion.py --seconds 60` from a checkout on the Pi for
 a manual test. It watches physical pin 37 / GPIO26, prints input transitions,
 and releases the GPIO when finished. It does not activate the buzzer.
 
-## Temperature/humidity: SHT3x breakout
+## Temperature and humidity
 
-The latest photo shows bare VIN, GND, SCL, SDA holes and an unattached pin strip.
-A four-pin header must be soldered by someone equipped to do so, or the module
-must be replaced with a version with a fitted connector. Until then, treat the
-sensor as awaiting reliable reconnection, even though earlier temporary wiring
-successfully produced readings.
+The current SHTC3 I²C sensor returned a reading at `0x70` aboard on
+17 November 2026. The earlier SHT3x at `0x44` or `0x45` is also supported
+by the collector and uses the same Pi signals.
 
-The planned breadboard wiring after fitting a header is:
-
-| Wire | SHT3x label | Destination |
+| Wire | Sensor label | Destination |
 | --- | --- | --- |
-| Red | VIN / VCC | Breadboard b5 (3.3V) |
-| Black | GND | Breadboard b10 (ground) |
+| Red | VIN / VCC | Shared 3.3V row, b5 in the breadboard layout |
+| Black | GND | Shared ground row, b10 in the breadboard layout |
 | Blue | SDA | Pi physical pin 3 (BCM GPIO2) |
 | Green | SCL | Pi physical pin 5 (BCM GPIO3) |
 
-If the sensor stays outside the breadboard, use female-to-male power wires to
-b5/b10 and female-to-female signal wires to the Pi. If its soldered header is
-instead inserted into the breadboard, place its four pins in **different numbered
-rows** and adapt the jumper connections to those rows. Do not put all four pins
-in one connected a–e row.
+For a breakout mounted outside the breadboard, use female-to-male jumpers
+to b5/b10 and female-to-female jumpers to the Pi. If the breakout plugs into
+the breadboard, place its header pins in separate connected rows. Follow the
+labels on the actual board, since pin order can vary.
 
-Before this breadboard rearrangement, the sensor responded at I²C address `0x44`.
-On 2026-10-28, a scheduled upload at 20:13 Europe/Madrid reported 23.42°C and 66.9%
-humidity and reached the website API. The five-minute sensor service is already
-installed, but this earlier success does not verify the later loose connections.
+For a read-only sensor check, run
+`python3 /opt/kisero/collector/sensor_collector.py --check` on the Pi.
 
-## GPS
+## USB GPS
 
-Not connected. The last photograph showed the rear of a module and a loose
-header. Confirm the model, required supply voltage, labels, and a secure fitted
-connector before choosing its final wiring. No GPS wiring is recorded as complete.
+The onboard u-blox 7 GPS plugs into a USB port and enumerates under
+`/dev/serial/by-id/usb-u-blox*`. The GPS tracker uses this receiver. The
+USB setup requires no GPIO wiring.
+
+### Earlier GPIO UART GPS experiment
+
+ATGM336H-5N31 breakout; the user reported connecting it on 2026-11-14.
+The receive-only wiring agreed for this board is:
+
+| GPS label | Destination |
+| --- | --- |
+| VCC | Breadboard d5 (3.3 V) |
+| GND | Breadboard d10 (ground) |
+| TX | Pi physical pin 10 (BCM GPIO15 / UART RX) |
+| RX, PPS | Leave disconnected |
+
+The antenna cable snaps onto the small round socket; no solder is needed there.
+The header joints and exact wire positions have not been independently verified.
+
+The earlier [UART setup script](scripts/enable-gps-uart.sh) backs up the boot
+files, enables the GPIO UART, and removes the serial login console. A reboot
+applies it. [check-gps.py](scripts/check-gps.py) counts valid NMEA sentences
+without printing coordinates. Only one reader should open a serial device at
+a time.
+
+On 14 November 2026 the Pi rebooted successfully and GPIO15 reported `RXD1`.
+A 20-second read of `/dev/serial0` at 9600 baud received zero bytes. The current
+setup uses the USB receiver.
 
 ## Pins currently allocated by this layout
 
 | Pi physical pin | Role |
 | --- | --- |
-| 3 | SHT3x SDA (planned reconnection) |
+| 3 | Cabin sensor SDA (BCM GPIO2) |
 | 4 | PIR 5V power |
-| 5 | SHT3x SCL (planned reconnection) |
+| 5 | Cabin sensor SCL (BCM GPIO3) |
 | 12 | Buzzer signal (GPIO18) |
 | 14 | Breadboard ground feed |
 | 17 | Breadboard 3.3V feed |
@@ -126,7 +143,7 @@ connector before choosing its final wiring. No GPS wiring is recorded as complet
 The previous direct temperature-sensor supply pins 1 and 6 are superseded by the
 breadboard supply in this plan. Do not retain duplicate loose supply wires.
 
-### Continuous alarm service
+## Continuous alarm service
 
 The alarm service uses the verified PIR BCM26 (physical37) and buzzer BCM18
 (physical12) wiring above. Stop `kisero-alarm.service` before running standalone

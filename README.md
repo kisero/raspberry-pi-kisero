@@ -1,257 +1,107 @@
 # Kisero Raspberry Pi
 
-This repository is the source of truth for the boat Raspberry Pi setup and application.
+The onboard Pi runs the `Kisero-Boat` Wi-Fi hotspot, shares the boat's 4G
+connection, monitors the cabin and alarm, and publishes sailing tracks from
+the Yacht Devices NMEA 2000 gateway. The website reads the AWS API at runtime.
 
-See [WIRING.md](WIRING.md) for the latest physical pin numbers, cable colors,
-breadboard holes, and verification status for the buzzer, motion sensor, and
-temperature sensor. The GPS is not yet connected.
+- [Live site](https://kisero.org/) and [website repository](https://github.com/kisero/kisero.org)
+- [Wiring and GPIO assignments](WIRING.md)
+- [Tailscale remote access](docs/remote-access.md)
+- [GPS, voyage imports, and OwnTracks](docs/boat-automation.md)
+- [Data flow and storage](ARCHITECTURE.md) and [AWS deployment](aws/DEPLOYMENT.md)
 
-## Current network design
+## Onboard setup
 
-- `eth0` is the home-router management and internet link whenever the cable is connected (DHCP, route metric 50).
-- `wlan0` is the boat Wi-Fi access point for the Yachtdevice and phone. It is configured as `Kisero-Boat` on 2.4 GHz channel 6.
-- NetworkManager's `shared` mode provides DHCP and routes hotspot clients through the current internet uplink. At home this is Ethernet; aboard it is the USB 4G modem (route metric 100), whose HTTPS connectivity has been verified.
-- The Yachtdevice should join the Pi access point in Wi-Fi Client mode. Reserve its address on the Pi before enabling the log collector.
+Verified on 17 November 2026 on a Raspberry Pi 3 Model B Rev 1.2 running
+Debian 13.7. The boat's hotspot, 4G default route, and remote SSH worked with
+Ethernet disconnected. The cabin sensor returned a valid reading at `0x70`,
+the USB GPS and installed services were present, and the Yacht Devices Memory
+download and historical import worked. The first automatic publishing run
+from a new completed outing is still to be verified.
 
-The Pi 3's built-in Wi-Fi required Protected Management Frames (PMF) to be disabled for WPA-PSK access point startup on this Debian 13 image. The hotspot remains password-protected; the setup script applies this compatibility setting.
-
-## Current status (2026-10-28)
-
-- Hotspot remains active as `Kisero-Boat`, with subnet `10.42.0.0/24` and Pi address `10.42.0.1`.
-- Ethernet management uses the dedicated `kisero-home-ethernet` NetworkManager profile, bound to `eth0`, with DHCP and autoconnect enabled. Its last verified home-network address is `192.168.68.68/22` (router `192.168.68.1`). SSH was last verified as `admin@192.168.68.68` without joining the hotspot.
-- The Ethernet MAC address observed on the Pi is **`b8:27:eb:23:e8:89`**. Use this address for a router DHCP reservation; `b8:27:eb:76:bd:dc` is the Wi-Fi MAC, not the Ethernet MAC. DHCP may change the IP unless the router reserves it.
-- The 4G UFI USB modem presents an RNDIS network adapter as `usb0` at `192.168.100.158/24`. The existing generic `netplan-eth0` profile was attached to that adapter, leaving physical Ethernet disconnected even with carrier detected. The dedicated Ethernet profile fixes this without altering the USB or hotspot profiles.
-- Home Ethernet is preferred while connected (metric 50); the USB modem is the default internet uplink aboard when Ethernet is absent (metric 100).
-- The Yachtdevice collector still needs live-device export inspection aboard before automated downloads can be enabled.
-
-To recreate or repair the wired management profile, copy and run `scripts/setup-ethernet.sh` on the Pi with `sudo bash scripts/setup-ethernet.sh`. It activates DHCP on `eth0` and persists across reboots; it does not restart NetworkManager or alter `wlan0`.
-
-## Yachtdevice log collection
-
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the recommended low-maintenance AWS
-archive, public track site, collection cadence, cost drivers, and implementation
-sequence.
-
-The Yacht Devices YDWG-02 manual (firmware 1.71) documents recorded-data export
-through its browser export page. To make it available to the Pi:
-
-1. Reserve `10.42.0.2` for the Yachtdevice, or exclude it from the hotspot DHCP
-   allocation range before using it as a static address. This reservation is still
-   pending until the device is available aboard. Then join the Yachtdevice to
-   `Kisero-Boat` in Wi-Fi Client mode, using `10.42.0.2/24`, gateway and DNS
-   `10.42.0.1`.
-2. In the Yachtdevice NMEA Servers settings, set Server #3's data protocol to
-   `Memory` and its port to `1458`.
-3. The export page is then at `http://10.42.0.2:1458/` and can export recorded
-   points as CSV, GPX, or XML.
-
-The manual describes the export as a browser workflow: the page first loads the
-stored data, then presents format and export options. It does not document a
-direct file-download URL or a stable machine API. Inspect the live page and
-download request before implementing automated collection. Keep raw exports
-append-only and outside Git; do not overwrite older logs.
-
-The supplied example export is a semicolon-separated CSV with a UTF-8 BOM,
-quoted timestamps in `DD/MM/YYYY, HH:MM:SS` format, and columns for position,
-depth, speed over ground, wind, heading, and other measurements. Parse it with
-that locale and preserve the original export as the source record. Trip
-detection will use the requested definition of any time moving underway, not a
-claim that the boat was specifically under sail. The sample has no engine
-state, so it cannot distinguish sailing from motoring. Calibrate configurable
-speed/duration thresholds against actual passages.
-
-The manual says factory logging is enabled at a five-minute interval and that
-device memory overwrites old points when full. Set up recurring collection and
-verify retention onboard before relying on the Pi as a backup. The requested
-archive is AWS S3 and kisero.org will show exact tracks publicly; raw CSV sensor
-exports remain private by default. Keep upload credentials in a device-only
-secrets file, never in this repository.
-
-## Collector prototype and local simulation
-
-The supplied export parser and configurable underway detector are in
-`collector/pipeline.py`. Run a private local simulation (replace the source
-path as needed):
-
-```sh
-python3 collector/pipeline.py "/path/to/Yachtdevice export.csv" --output /tmp/kisero-derived
-```
-
-It writes a trip index and exact-track JSON into the chosen output directory.
-Those files contain precise locations; keep them out of Git and share them only
-with the intended audience. The default detector uses SOG >= 1 knot, a 20-minute
-gap to join moving intervals, and a 10-minute minimum duration. These are
-starting values to tune against real onboard logs.
-
-`collector/uploader.py` queues an explicitly selected CSV in a private local
-SQLite database, then sends pending exports and their derived tracks to the
-API. It removes an item from the retry queue only after AWS acknowledges the
-matching SHA-256 digest. The database defaults to `var/collector.db` (ignored
-by Git, mode 0600) and can be moved with `KISERO_QUEUE_PATH`. It requires
-`KISERO_API_URL` and `KISERO_DEVICE_TOKEN` in its runtime environment. It does
-not yet poll the Yachtdevice: its documented export is a browser workflow, so
-inspect the live unit's download requests aboard before automating acquisition
-or scheduling uploads.
-
-The SAM template under `aws/` creates a private, encrypted, versioned S3
-archive and a Lambda-backed API. Anonymous GET routes serve the published exact
-tracks and the recent cabin temperature/humidity series; authenticated Pi POST
-routes archive raw NMEA exports and sensor samples. The API token is held in an
-SSM SecureString.
-
-Hotspot setup is performed with `scripts/setup-hotspot.sh`. It prompts for the Wi-Fi password and does not put it in this repository. Do not commit Wi-Fi passwords, modem credentials, private keys, or raw NMEA/position logs.
-
-## Device baseline
-
-- Raspberry Pi 3 Model B Rev 1.2, Debian GNU/Linux 13.7 (checked 2026-10-15).
-- Wi-Fi access point configuration is managed by NetworkManager.
-
-## Temperature and humidity sensor
-
-The SHT3x breakout uses I²C. The latest breadboard wiring and the missing
-soldered-header requirement are recorded in [WIRING.md](WIRING.md). VIN uses
-3.3 V, SDA uses physical pin 3, and SCL uses physical pin 5. Enable the Pi's standard I²C
-interface with `scripts/enable-i2c.sh`; a reboot is required before checking
-for the sensor at address `0x44` or `0x45`.
-
-`collector/sensor_collector.py` validates the SHT3x CRC, samples the sensor,
-queues each reading locally until AWS acknowledges it, and posts readings to
-`/v1/sensors`. Run it with `--check` to take a read-only sample without queueing
-or uploading it. `systemd/kisero-sensor.timer` runs the oneshot service five
-minutes after the previous run. Install the service files from the repository
-at `/opt/kisero`; create `/etc/kisero/sensor.env` with `KISERO_API_URL` and
-`KISERO_DEVICE_TOKEN` (mode 0600, never in Git), then enable
-`kisero-sensor.timer`. The API keeps the complete encrypted sensor archive
-private in S3 and exposes only the recent temperature/humidity series to the
-website.
-
-## USB 4G modem (2026-10-28)
-
-The connected stick enumerates as USB `05c6:9024` (Qualcomm Android) and exposes
-`usb0` through the Linux `rndis_host` driver. It is a self-contained mobile router:
-the SIM, carrier registration, and APN are handled by its 4G UFI web interface at
-`http://192.168.100.1/`, rather than ModemManager on the Pi.
-
-`scripts/setup-usb-modem.sh` creates the persistent `kisero-usb-modem` profile
-bound only to `usb0`, using DHCP, autoconnect, and route metric 100. Run it with
-sudo on the Pi. The home Ethernet profile uses metric 50, so Ethernet supplies
-internet while attached; USB supplies the default route when Ethernet is absent.
-The existing hotspot uses NetworkManager shared mode to route boat clients via
-the available uplink. No NetworkManager restart is required.
-
-Run `scripts/check-usb-internet.sh` to check HTTPS explicitly through `usb0`.
-Success through home Ethernet is not evidence that the SIM has working data.
-
-`scripts/modem-status.py --login` prompts for the modem web password and prints
-SIM/network/APN status with credentials and SIM identifiers redacted. An authenticated
-session is held privately under `/run/user/<uid>/` for the current boot; credentials
-are not stored in Git. It also supports `--select-sim 1` or `--select-sim 2` for this
-modem's two selectable slots. Selecting a slot may briefly restart the modem.
-
-Initial diagnosis before the SIM was reseated/unlocked: USB DHCP and modem administration worked, but both SIM selections
-reported `simCardState=invalid`, no SIM identifiers, no service, no WAN IP, and APN
-`none`. USB-bound traffic received “Destination Net Unreachable” from the modem.
-Selection was returned to slot 1. After the user addressed the physical SIM/PIN,
-the modem reported `simCardState=ok`, carrier `MASMOVIL`, and a connected mobile WAN.
-It automatically selected its `Yoigo Internet` profile with APN `internet`.
-A USB-bound Google HTTPS check returned HTTP 204, and the Kisero AWS `/v1/sensors` endpoint returned HTTP 200 over USB, independently of Ethernet.
-The diagnostic uses this endpoint because example.com reset connections on this
-mobile service; ICMP and direct Cloudflare tests did not succeed. No manual APN
-change or SIM PIN guessing was needed. Network time synchronization is now active.
-
-## Reproducing the configuration
-
-The setup scripts are the reproducible, non-secret configuration record. Raw
-NetworkManager connection files, modem session files, and runtime environment
-files must not be committed: they can contain passwords or upload tokens.
-
-| Component | Repository record | Device configuration |
+| Component | Current configuration | Setup or operations |
 | --- | --- | --- |
-| Home Ethernet | `scripts/setup-ethernet.sh` | `kisero-home-ethernet`, bound to `eth0`, DHCP, autoconnect, metric 50 |
-| USB mobile uplink | `scripts/setup-usb-modem.sh` | `kisero-usb-modem`, bound to `usb0`, DHCP, autoconnect, metric 100 |
-| Boat Wi-Fi | `scripts/setup-hotspot.sh` | `kisero-boat-ap`, `Kisero-Boat`, 2.4 GHz channel 6, WPA2, PMF disabled, shared IPv4 |
-| Cabin sensor | `scripts/enable-i2c.sh`, `scripts/install-sensor-service.sh`, `systemd/kisero-sensor.*` | I²C SHT3x at `0x44`/`0x45`, five-minute collection and queued upload |
-| Cloud infrastructure | `aws/template.yaml` | SAM/CloudFormation stack `kisero-yachtdevice`, region `eu-north-1` |
-| Modem diagnostics | `scripts/modem-status.py`, `scripts/check-usb-internet.sh` | Redacted modem status and USB-bound HTTPS checks |
+| Wi-Fi hotspot | `Kisero-Boat` on `wlan0`, 2.4 GHz channel 6, Pi at `10.42.0.1/24` | [setup-hotspot.sh](scripts/setup-hotspot.sh) |
+| 4G uplink | UFI modem at `192.168.100.1`, `kisero-usb-modem` on RNDIS `usb0`, DHCP metric 100 | [setup-usb-modem.sh](scripts/setup-usb-modem.sh), [check-usb-internet.sh](scripts/check-usb-internet.sh) |
+| Wired recovery | `kisero-home-ethernet` on `eth0`, DHCP metric 50. The router assigns its LAN address. | [setup-ethernet.sh](scripts/setup-ethernet.sh) |
+| Remote SSH | `tailscale ssh admin@kisero-boat` from the same personal tailnet | [Remote access](docs/remote-access.md) |
+| Boat GPS | USB u-blox 7 receiver, detected through `/dev/serial/by-id/` | [Boat automation](docs/boat-automation.md) |
+| Yacht Devices gateway | Wi-Fi client at `10.42.0.149` as verified aboard, firmware 1.60, Memory server on TCP 1458 | [Boat automation](docs/boat-automation.md) |
+| Cabin sensor | SHTC3 at I²C address `0x70`, sampled every five minutes | [Wiring](WIRING.md), [install-sensor-service.sh](scripts/install-sensor-service.sh) |
+| Motion alarm | PIR on BCM26 (physical 37), buzzer on BCM18 (physical 12) | [Wiring](WIRING.md), [install-alarm-service.sh](scripts/install-alarm-service.sh) |
 
-For a replacement Pi, apply the Ethernet and USB scripts, then configure the
-hotspot over Ethernet using its existing script. Enter a Wi-Fi password at the
-prompt; recreate `/etc/kisero/sensor.env` privately and install the sensor service.
-SIM subscription and PIN policy are configured on the SIM/modem, outside Git.
-The modem selected SIM slot 1 and APN `internet` automatically; no operator account
-password, SIM PIN, IMEI, IMSI, ICCID, or modem web password is saved here.
+NetworkManager shared mode routes hotspot clients through the current uplink.
+Ethernet takes priority when connected. The hotspot setup prompts for its WPA2
+password and disables PMF for compatibility with the Pi's built-in Wi-Fi.
+Manage the modem's SIM and APN in the modem's local UI. The last verified modem
+configuration used SIM slot 1 and APN `internet`, selected by the modem.
+[modem-status.py](scripts/modem-status.py) can report its connection status with
+credentials and SIM identifiers redacted.
 
-Confirmed on 2026-10-28: Ethernet SSH, active hotspot, USB-bound HTTPS (HTTP 204),
-Kisero AWS access over USB (HTTP 200), enabled modem autoconnect, active sensor
-timer, and synchronized system time. A physical cable-removal/reboot failover
-check and testing with the Yachtdevice/Raymarine aboard remain outstanding.
+## Running services
 
-## Motion alarm and live website
+| Unit | Job |
+| --- | --- |
+| `kisero-boat.service` | Reads USB GPS continuously, attempts to send a fresh fix every 15 seconds, and saves voyage boundaries in SQLite. |
+| `kisero-yacht.timer` | Checks for completed voyages about every three minutes after the previous run. Downloads the Memory log, queues the export locally, and publishes the track after verification. |
+| `kisero-sensor.timer` | Samples cabin temperature and humidity every five minutes and retries queued uploads. |
+| `kisero-alarm.service` | Monitors motion, operates the buzzer locally, reads alarm controls, and sends Pi contact updates about every 30 seconds while online. |
 
-`collector/alarm.py` runs continuously under `systemd/kisero-alarm.service`.
-Install from this checkout using `sudo bash scripts/install-alarm-service.sh`.
-It reuses the private `/etc/kisero/sensor.env`; gpiozero and lgpio must be
-installed through the Pi's system packages. Wiring: PIR OUT BCM26/physical37,
-buzzer IO BCM18/physical12 (active high); see WIRING.md for power/ground.
+The public site shows Moored or Sailing with the named area when available,
+the Sailing Log with GPS tracks and wind readings, and cabin, alarm activity,
+and internet-contact charts with Today, Last Week, and Last Month views.
+The live boat label refreshes every 30 seconds while the page is visible.
+The public location label uses a named area. Exact tracks and timestamps are
+published for completed outings. Live boat and phone fixes for Auto alarm
+control stay private.
 
-The default is **off**. The PIR warms up for 60 seconds after service start.
-Arming gives a 30-second exit delay. A high PIR after the delay or a subsequent
-rising edge triggers a 10-second pulsed buzzer. Disarm stops the buzzer when the
-Pi receives it. Settings persist across restart; internet loss retains the last
-applied setting. This is a hobby alarm, not a monitored security service.
+### Alarm
 
-Motion transitions and arm/disarm/buzzer events are queued in a mode-0600 SQLite
-outbox until AWS acknowledges each ID. Heartbeats are sent every 30 seconds;
-control is polled every three seconds while online. A separate network worker
-keeps local sensing and buzzer timing responsive during internet outages.
-The website marks the Pi offline after 90 seconds without a heartbeat. Remote
-changes while offline remain pending and do not imply the Pi has applied them.
+The private alarm page supports Manual On, Manual Off, and Auto. Auto uses the
+distance between the boat GPS and the owner's OwnTracks phone fix. It arms
+when the boat is moored and the phone is confidently beyond 300 m, and
+disarms when the phone is confidently within that range or the boat is
+underway. Stale or uncertain positions leave the existing setting in place.
 
-Cloud: the existing Lambda/API gains alarm routes, an on-demand DynamoDB table
-for current state, seven-day events and WebSocket connections, and a public
-read-only API Gateway WebSocket feed. The public snapshot shows at most the
-latest 500 events from the last 24 hours. Every event is additionally archived
-privately under S3 `raw/motion/YYYY/MM/DD/<id>.json` for long-term analysis.
-The public feed never accepts controls or device uploads. Routine heartbeats
-are not written to S3. Costs depend on motion, connected viewers and AWS usage;
-this uses no continuously running cloud server.
+The PIR has a 60-second warm-up. Arming gives a 30-second exit delay, and an
+armed trigger pulses the buzzer for 10 seconds. The Pi retains the last applied
+setting through network loss and queues events locally. AWS sends an email
+to the confirmed SNS subscriber when it receives an armed trigger. The website's alarm timeline
+highlights armed activity. Generate the private control link on the Pi with
+`sudo python3 scripts/alarm-control-url.py` from the repository checkout.
+Keep the full link private.
 
-The unlinked `https://kisero.org/alarm.html#<capability>` page controls the alarm
-using a purpose-specific HMAC derived from the existing upload token. The
-fragment is not sent to the hosting server, and the upload token is never
-included in the website. Generate the link privately on the Pi with
-`sudo python3 scripts/alarm-control-url.py`; do not commit or share the result.
-Anyone with that complete link can arm/disarm. Rotating the device token also
-invalidates the derived control link (Lambda caches the token up to five minutes).
+## Restoring the Pi
 
-API routes: anonymous GET `/v1/alarm`; capability-authenticated POST
-`/v1/alarm/control` with `{"armed":true|false}`; device-token-authenticated GET/POST
-`/v1/alarm/device` and POST `/v1/motion`. Deploy using `sam build --template-file
-aws/template.yaml`, then `sam deploy --stack-name kisero-yachtdevice --region
-eu-north-1 --resolve-s3 --capabilities CAPABILITY_IAM` with the built template.
-Keep the existing stack, S3 bucket, SSM parameter and HTTP API.
+1. Set up or verify the [AWS stack](aws/DEPLOYMENT.md). Keep the existing stack
+   and bucket when restoring a Pi.
+2. Use the Ethernet, modem, hotspot, and Tailscale scripts linked above as
+   needed. Join the gateway to the hotspot as a Wi-Fi client and verify its IP
+   before configuring the importer. Set Server #3 to Memory on port 1458.
+3. Install the system packages `python3-smbus2`, `python3-gpiozero`, and
+   `python3-lgpio`. Enable I²C with [enable-i2c.sh](scripts/enable-i2c.sh) and
+   reboot before testing the cabin sensor.
+4. Create root-owned mode-0600 files in `/etc/kisero/` from
+   [sensor.env.example](config/sensor.env.example) and
+   [boat.env.example](config/boat.env.example). Fill in the API URL and device
+   token privately. Set the Memory URL to the gateway's current address.
+5. Run the three installers from the checkout.
 
-Deployment verified on 2026-10-28: CloudFormation update completed in
-`eu-north-1`; `kisero-alarm.service` is enabled and running on the Pi, with
-installed source/service checksums matching this repository. Actual PIR high
-and low transitions reached the public feed and website without a reload.
-The private page's on and off commands were acknowledged by the Pi during the
-exit delay, and the alarm was left **off**. The event outbox was empty after
-acknowledgement. This check did not deliberately sound the buzzer; the hardware's
-three-beep check is recorded in WIRING.md.
+   ```sh
+   sudo bash scripts/install-sensor-service.sh
+   sudo bash scripts/install-alarm-service.sh
+   sudo bash scripts/install-boat-services.sh
+   ```
 
-### Internet contact timeline
+6. Verify the services and a local cabin reading on the Pi.
 
-The alarm device heartbeat also records its **AWS server receipt time**, at most
-one record per 30-second bin, in the existing DynamoDB table. Records expire
-after seven days; GET `/v1/alarm` supplies the latest 24 hours plus the monitoring
-start time and a 90-second grace period. WebSocket status pushes carry new
-receipt times. No new AWS resources, IAM permissions, Pi services or secrets are
-required. Sensor sample age is separate from internet contact: a sensor can stop
-reporting while the Pi still has internet.
+   ```sh
+   systemctl is-active kisero-boat.service kisero-alarm.service kisero-sensor.timer kisero-yacht.timer
+   python3 /opt/kisero/collector/sensor_collector.py --check
+   bash scripts/check-usb-internet.sh
+   ```
 
-The website interprets a recent successful Pi→AWS contact as confirmed internet
-reachability, a gap longer than 90 seconds as **no contact**, and time before
-monitoring began as **no data**. No contact cannot distinguish an internet outage
-from a powered-off Pi or unreachable backend. Historical gaps before this
-monitor was deployed are not reconstructed or labelled as outages.
+The live SQLite queues and alarm state are under `/var/lib/kisero/`. Keep
+them during upgrades. Keep raw logs, runtime configuration, and credentials
+out of Git. For a manual Memory backfill, see the [boat automation runbook](docs/boat-automation.md).
+Run the collector tests locally with `PYTHONPATH=collector python3 -m unittest discover -s tests`.

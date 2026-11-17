@@ -1,21 +1,68 @@
-# Boat GPS, voyages, and alarm
+# Boat GPS, voyage imports, and OwnTracks
 
-Install the GPS tracker and voyage upload timer on the Pi with `sudo scripts/install-boat-services.sh` after deploying the AWS SAM stack. The tracker reuses `/etc/kisero/sensor.env` for the API URL and device token. The USB u-blox is detected by its persistent serial name. Set `KISERO_GPS_DEVICE` in `/etc/kisero/boat.env` if multiple receivers match.
+## USB GPS and boat status
 
-A valid GPS fix is required. The tracker confirms departure at 1 knot or more for 60 seconds, and arrival at 0.5 knots or less for 10 minutes. It records the time each period began. An active outing and completed upload jobs survive Pi restarts. The website shows the nearest configured area and reports when the live position is unavailable.
+The installed USB u-blox 7 receiver is detected under
+`/dev/serial/by-id/usb-u-blox*`. Set `KISERO_GPS_DEVICE` in
+`/etc/kisero/boat.env` if more than one receiver matches. Install the tracker
+with `sudo bash scripts/install-boat-services.sh` after deploying AWS and
+preparing the device environment files. See the [README](../README.md).
 
-## Yacht Devices export
+The tracker confirms departure at 1 knot or more for 60 seconds and arrival
+at 0.5 knots or less for 10 minutes. It records the times at which those
+periods began. The voyage queue survives restarts. The public website shows
+Moored or Sailing and a named area when the position falls in a configured
+coverage area. These speed thresholds cover movement under sail or motor.
 
-The upload timer waits for a validated Memory CSV endpoint on the hotspot. Confirm the gateway joins the hotspot at 10.42.0.2 and inspect the Memory server to determine how its CSV is exported. If the firmware serves CSV at a direct path, set these values in `/etc/kisero/boat.env`:
+## Yacht Devices Memory server
 
-- `KISERO_YACHT_CSV_URL` is the verified HTTP URL on `10.42.0.2:1458`.
-- `KISERO_YACHT_CSV_TIMEZONE` is the timezone used in the exported timestamps, such as `UTC` if confirmed.
-- `KISERO_YACHT_SAMPLE_SECONDS` is the logging interval, currently assumed to be 15 seconds.
+The YDWG-02 gateway joins `Kisero-Boat` in Wi-Fi Client mode. The working
+hotspot address is `10.42.0.149`. If DHCP changes it, update
+`KISERO_YACHT_MEMORY_URL` in `/etc/kisero/boat.env`. Configure a
+stable address before relying on unattended access after a gateway reset.
 
-Only the completed outing's samples and sailing readings are published. The original CSV is archived privately. If an export is incomplete or the service is offline, the outing stays queued for the timer to retry. A firmware version that only constructs CSV in the browser needs a downloader for its underlying log format.
+Set Server #3 to **Memory** on TCP port **1458**. The live gateway uses a
+15-second interval, NMEA 2000 Only, the Sailing Yacht data set, and the
+five-metre minimum spacing option. Its current download range is All data.
+The Pi can fetch the Memory page directly at `http://10.42.0.149:1458/`.
+The firmware sends binary records encoded in the page. The Pi decodes
+those records to CSV with UTC timestamps.
+
+A timer retries completed outings until it can match the gateway data to
+the USB GPS boundaries. If a download has missing blocks, the collector
+takes a second snapshot and merges the available records. A valid export
+is queued before AWS is contacted. Leave the gateway powered long enough
+after arrival for the stop confirmation and import, or let the timer
+retry when the gateway is available again. The gateway overwrites its
+oldest stored records when memory fills, so keep the private archive.
+
+### Historical backfill
+
+Save the raw Memory pages privately. With `KISERO_API_URL` configured,
+preview the inferred voyages using one or more snapshots.
+
+```sh
+python3 collector/yacht_fetch.py --backfill /path/to/memory.html /path/to/second-memory.html
+```
+
+With the device upload environment, add `--publish` to archive the
+merged records in private S3 and update the public Sailing Log. Review
+the preview before using this option. A later snapshot can improve an
+already imported track with the same boundaries and more points.
+The original historical CSV workflow remains available through
+[`pipeline.py`](../collector/pipeline.py) and [`uploader.py`](../collector/uploader.py).
+
+Reference for the gateway setup [YDWG-02 manual, Memory mode](https://www.yachtd.com/downloads/ydwg02.pdf#page=41).
 
 ## OwnTracks for iPhone
 
-Select HTTP mode, use the HTTPS API base plus `/v1/alarm/owntracks`, username `kisero`, and the dedicated OwnTracks password. That password is the lowercase hex HMAC-SHA256 of `kisero-owntracks-v1` using the existing Pi device token as the key. Keep it out of Git and the website.
+Select HTTP mode, use the HTTPS API base plus `/v1/alarm/owntracks`,
+username `kisero`, and the dedicated OwnTracks password. That password is
+the lowercase hex HMAC-SHA256 of `kisero-owntracks-v1`, using the existing
+Pi device token as the key. Keep it private.
 
-Allow Always and Precise location in iOS. Use Move mode and send one position manually to verify setup. Keep the alarm in manual mode during the first check. The alarm page can then switch between Manual On, Manual Off, and Auto. The backend uses fresh positions and accounts for GPS accuracy near the 300 metre boundary. If a fix is stale or uncertain it keeps the last alarm state. An underway boat disarms in Auto. Only the private backend receives phone coordinates.
+Allow Always and Precise Location in iOS. Use Move mode and send a manual
+position to verify receipt. The private alarm page can show distance to the
+boat when both fixes are recent. Set Auto only after verifying that the boat
+and phone positions are arriving. Manual On and Manual Off can override Auto.
+Fresh fixes and the accuracy margin around 300 m are described in the [README](../README.md).

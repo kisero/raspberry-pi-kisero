@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read an SHT3x sensor, durably queue it, and upload pending samples."""
+"""Read a Sensirion cabin sensor, durably queue it, and upload pending samples."""
 from __future__ import annotations
 
 import json
@@ -18,7 +18,8 @@ API_URL = os.environ.get("KISERO_API_URL", "").rstrip("/")
 DEVICE_TOKEN = os.environ.get("KISERO_DEVICE_TOKEN", "")
 QUEUE_PATH = Path(os.environ.get("KISERO_SENSOR_QUEUE", "/var/lib/kisero/sensors.sqlite3"))
 I2C_BUS = int(os.environ.get("KISERO_I2C_BUS", "1"))
-SENSOR_ADDRESSES = (0x44, 0x45)
+SHTC3_ADDRESS = 0x70
+SENSOR_ADDRESSES = (0x44, 0x45, SHTC3_ADDRESS)
 
 
 def crc8(data: list[int]) -> int:
@@ -30,29 +31,43 @@ def crc8(data: list[int]) -> int:
     return crc
 
 
+def read_measurement(bus: SMBus, address: int) -> list[int]:
+    shtc3 = address == SHTC3_ADDRESS
+    if shtc3:
+        bus.i2c_rdwr(i2c_msg.write(address, [0x35, 0x17]))  # Wake up.
+        time.sleep(0.001)
+    try:
+        command = [0x78, 0x66] if shtc3 else [0x24, 0x00]
+        bus.i2c_rdwr(i2c_msg.write(address, command))
+        time.sleep(0.02)
+        message = i2c_msg.read(address, 6)
+        bus.i2c_rdwr(message)
+        return list(message)
+    finally:
+        if shtc3:
+            bus.i2c_rdwr(i2c_msg.write(address, [0xB0, 0x98]))  # Sleep.
+
+
 def read_sensor() -> tuple[int, float, float]:
     """Return (I2C address, Celsius, relative humidity) with CRC validation."""
     errors = []
     for address in SENSOR_ADDRESSES:
         try:
             with SMBus(I2C_BUS) as bus:
-                bus.i2c_rdwr(i2c_msg.write(address, [0x24, 0x00]))
-                time.sleep(0.02)
-                message = i2c_msg.read(address, 6)
-                bus.i2c_rdwr(message)
-                raw = list(message)
+                raw = read_measurement(bus, address)
             if crc8(raw[0:2]) != raw[2] or crc8(raw[3:5]) != raw[5]:
-                raise ValueError("SHT3x response failed CRC validation")
+                raise ValueError("Sensor response failed CRC validation")
             raw_temperature = (raw[0] << 8) | raw[1]
             raw_humidity = (raw[3] << 8) | raw[4]
-            temperature_c = -45.0 + 175.0 * raw_temperature / 65535.0
-            humidity_pct = 100.0 * raw_humidity / 65535.0
+            scale = 65536.0 if address == SHTC3_ADDRESS else 65535.0
+            temperature_c = -45.0 + 175.0 * raw_temperature / scale
+            humidity_pct = 100.0 * raw_humidity / scale
             if not (-40.0 <= temperature_c <= 125.0 and 0.0 <= humidity_pct <= 100.0):
-                raise ValueError("SHT3x returned an out-of-range measurement")
+                raise ValueError("Sensor returned an out-of-range measurement")
             return address, temperature_c, humidity_pct
         except (OSError, ValueError) as error:
             errors.append(f"0x{address:02x}: {error}")
-    raise RuntimeError("No SHT3x responded on I2C bus %d (%s)" % (I2C_BUS, "; ".join(errors)))
+    raise RuntimeError("No cabin sensor responded on I2C bus %d (%s)" % (I2C_BUS, "; ".join(errors)))
 
 
 def connect_queue() -> sqlite3.Connection:

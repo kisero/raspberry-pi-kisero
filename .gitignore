@@ -8,5 +8,6 @@ var/
 .env.*
 !.env.example
 sensor.env
+boat.env
 *.nmconnection
 kisero-ufi-session.json
