@@ -13,16 +13,20 @@ from pathlib import Path
 
 def parse_export(path: Path) -> list[dict]:
     with path.open("r", encoding="utf-8-sig", newline="") as stream:
-        rows = csv.DictReader(stream, delimiter=";")
-        if not rows.fieldnames or "Time" not in rows.fieldnames:
-            raise ValueError("CSV must contain a Time column")
-        result = []
-        for row in rows:
-            point = {key.strip(): (value or "").strip() for key, value in row.items() if key}
-            point["_time"] = datetime.strptime(point["Time"].strip('"'), "%d/%m/%Y, %H:%M:%S")
-            for key in ("Latitude", "Longitude", "SOG"):
-                point["_" + key.lower()] = float(point[key].replace(",", "."))
-            result.append(point)
+        return read_export(stream)
+
+
+def read_export(stream) -> list[dict]:
+    rows = csv.DictReader(stream, delimiter=";")
+    if not rows.fieldnames or "Time" not in rows.fieldnames:
+        raise ValueError("CSV must contain a Time column")
+    result = []
+    for row in rows:
+        point = {key.strip(): (value or "").strip() for key, value in row.items() if key}
+        point["_time"] = datetime.strptime(point["Time"].strip('"'), "%d/%m/%Y, %H:%M:%S")
+        for key in ("Latitude", "Longitude", "SOG"):
+            point["_" + key.lower()] = float(point[key].replace(",", "."))
+        result.append(point)
     result.sort(key=lambda p: p["_time"])
     return result
 
