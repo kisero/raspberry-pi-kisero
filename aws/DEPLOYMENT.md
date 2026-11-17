@@ -23,10 +23,13 @@ sam deploy --stack-name kisero-yachtdevice --region eu-north-1 \
 2. Use the stack's `ApiUrl` for `KISERO_API_URL` on the Pi and keep the
    website's API base aligned with it. See the [Pi restore steps](../README.md#restoring-the-pi).
 3. Confirm the Pi can reach the API and its service timers are active.
-   Public read endpoints include `/v1/trips`, `/v1/trips/{id}`,
+   Public read endpoints include `/v1/home`, `/v1/trips`, `/v1/trips/{id}`,
    `/v1/sensors`, `/v1/alarm`, and `/v1/alarm/boat`. Completed voyages
    include exact GPS tracks and timestamps. The live boat endpoint
-   shows state and a named area when available.
+   shows state and a named area when available. Check that `/v1/home`
+   includes `device.receivedAt`, `cabin.observedAt`, and the trip index.
+   The next Pi reports populate the snapshot on a new deployment. GPS state
+   appears after the Pi reports a valid Moored or Sailing fix.
 4. In SNS, check the intended email address is subscribed and confirmed
    on the **Kisero Boat Alarm** topic. A confirmed recipient receives an
    email when the backend accepts an armed buzzer trigger.

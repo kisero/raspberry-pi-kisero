@@ -62,9 +62,18 @@ The design uses request-based services and object storage. Keep the
 existing $5 budget alert separate from the application stack. See the
 [AWS deployment runbook](aws/DEPLOYMENT.md).
 
-The public homepage reads the last-known telemetry from `GET /v1/home`.
-The authenticated uploads update independent cabin, coarse position, and
-device fields in a single durable DynamoDB item. The existing published
-S3 index supplies the trip summaries. Page visits read these stored values.
-The browser keeps a local copy and marks the boat offline 60 seconds after
-its last server-received heartbeat.
+## Homepage snapshot
+
+`GET /v1/home` reads the last published cabin observation, coarse boat status
+and alarm device state from a single DynamoDB item. The existing S3 index
+supplies the trip summaries. Normal authenticated Pi uploads update the
+cached fields independently. The boat status cache retains the last valid
+Moored or Sailing state through gaps in GPS reception.
+
+The website starts with a browser copy or the fallback bundled by Amplify at
+build time. It refreshes the shared snapshot while visible. The latest heartbeat
+receipt time in AWS determines whether the homepage shows the boat offline
+after 60 seconds. Last known readings stay visible. A cabin observation has
+its own timestamp and is normally sampled every five minutes.
+
+See the [website snapshot documentation](https://github.com/kisero/kisero.org#homepage-snapshot).
