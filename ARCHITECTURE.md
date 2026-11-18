@@ -71,9 +71,10 @@ cached fields independently. The boat status cache retains the last valid
 Moored or Sailing state through gaps in GPS reception.
 
 The website starts with a browser copy or the fallback bundled by Amplify at
-build time. It refreshes the shared snapshot while visible. The latest heartbeat
-receipt time in AWS determines whether the homepage shows the boat offline
-after 60 seconds. Last known readings stay visible. A cabin observation has
-its own timestamp and is normally sampled every five minutes.
+build time. It refreshes the shared snapshot while visible. The homepage
+displays the latest heartbeat receipt time in AWS as the last update, in
+the visitor's local time. Last known readings stay visible between reports.
+A cabin observation has its own timestamp and is normally sampled every
+five minutes.
 
 See the [website snapshot documentation](https://github.com/kisero/kisero.org#homepage-snapshot).

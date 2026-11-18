@@ -51,9 +51,9 @@ The public site shows Moored or Sailing with the named area when available,
 the Sailing Log with GPS tracks and wind readings, and cabin, alarm activity,
 and internet-contact charts with Today, Last Week, and Last Month views.
 The homepage opens with a [cached snapshot](ARCHITECTURE.md#homepage-snapshot)
-and checks for updates every 15 seconds while visible. It shows the boat offline
-after 60 seconds without an AWS-received Pi heartbeat, with the last readings
-and contact time visible.
+and checks for updates every 15 seconds while visible. It shows the last
+AWS-received Pi heartbeat as the update time and keeps the last readings
+visible between reports.
 The public location label uses a named area. Exact tracks and timestamps are
 published for completed outings. Live boat and phone fixes for Auto alarm
 control stay private.
